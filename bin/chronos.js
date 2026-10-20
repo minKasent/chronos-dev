@@ -491,15 +491,15 @@ async function main() {
     return;
   }
 
-  if (cmd === 'ui') {
-    const shouldOpen = args.includes('--open') || args.includes('-o');
+  if (cmd === 'ui' || cmd === 'start' || cmd === 'studio') {
+    const noOpen = args.includes('--no-open') || args.includes('--headless');
     const portArg = args.slice(1).find((a) => !a.startsWith('-'));
     const port = Number(portArg) || 4321;
     const { url } = await createServer(cwd, port);
     printBanner();
     console.log(`${c.green}${c.bold}🚀 Chronos Studio Web UI v3.0 is live at:${c.reset} ${c.cyan}${c.bold}${url}${c.reset}`);
     console.log(`${c.gray}   Tracking workspace: ${cwd}${c.reset}`);
-    if (shouldOpen) openBrowser(url);
+    if (!noOpen) openBrowser(url);
     return;
   }
 
