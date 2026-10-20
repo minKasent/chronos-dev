@@ -521,6 +521,7 @@ class ChronosEngine {
       removedLines: 0
     };
 
+    let changedFiles = Object.keys(tree);
     if (prevMeta) {
       const prevCp = this.getCheckpoint(prevMeta.id);
       if (prevCp) {
@@ -531,6 +532,7 @@ class ChronosEngine {
           (_p, meta) => this.readBlob(meta.hash, true)
         );
         diffSummary = diffResult.summary;
+        changedFiles = diffResult.files.map((f) => f.path);
       }
     } else {
       let initialLines = 0;
@@ -566,6 +568,7 @@ class ChronosEngine {
       tags: options.tags || [],
       treeHash,
       fileCount: Object.keys(tree).length,
+      changedFiles,
       diffSummary,
       tree
     };
@@ -1173,6 +1176,159 @@ class ChronosEngine {
       logicalBytes,
       physicalCompressedBytes,
       savedPercent
+    };
+  }
+
+  /**
+   * Check whether the live working directory has unsaved/un-snapshotted modifications vs latest checkpoint
+   */
+  getWorktreeStatus() {
+    this.ensureInitialized();
+    const latestCp = this.resolveCheckpoint('latest');
+    if (!latestCp) {
+      return { isDirty: false, changedFilesCount: 0, changedFiles: [] };
+    }
+
+    const liveTree = this.scanWorkspace(false);
+    const liveHash = this.computeTreeHash(liveTree);
+    if (liveHash === latestCp.treeHash) {
+      return {
+        isDirty: false,
+        latestCheckpointId: latestCp.id,
+        changedFilesCount: 0,
+        changedFiles: []
+      };
+    }
+
+    const diff = this.diffTrees(
+      latestCp.tree,
+      liveTree,
+      (_p, meta) => this.readBlob(meta.hash, true),
+      (relPath) => fs.readFileSync(path.join(this.workspaceRoot, relPath), 'utf8')
+    );
+
+    return {
+      isDirty: true,
+      latestCheckpointId: latestCp.id,
+      changedFilesCount: diff.summary.totalChangedFiles,
+      addedLines: diff.summary.addedLines,
+      removedLines: diff.summary.removedLines,
+      changedFiles: diff.files.map((f) => ({
+        path: f.path,
+        status: f.status,
+        added: f.added,
+        removed: f.removed
+      }))
+    };
+  }
+
+  /**
+   * Retrieve the full evolution timeline of a single file across all checkpoints
+   */
+  getFileHistory(rawRelPath) {
+    this.ensureInitialized();
+    const relPath = rawRelPath.replace(/\\/g, '/').replace(/^\.\//, '');
+    const index = this.getIndex();
+    const history = [];
+    let prevHash = null;
+
+    for (const entry of index.checkpoints) {
+      const cp = this.getCheckpoint(entry.id);
+      if (!cp || !cp.tree) continue;
+      const meta = cp.tree[relPath];
+      const currHash = meta ? meta.hash : null;
+
+      if (currHash !== prevHash) {
+        const changeType = !prevHash && currHash
+          ? 'added'
+          : prevHash && !currHash
+          ? 'deleted'
+          : 'modified';
+        history.push({
+          seq: cp.seq,
+          id: cp.id,
+          timestamp: cp.timestamp,
+          status: cp.status,
+          exitCode: cp.exitCode,
+          label: cp.label,
+          tags: cp.tags || [],
+          changeType,
+          hash: currHash,
+          size: meta ? meta.size : 0
+        });
+        prevHash = currHash;
+      }
+    }
+
+    return {
+      path: relPath,
+      history: history.reverse()
+    };
+  }
+
+  /**
+   * Cryptographic CAS Integrity & Workspace Health Doctor
+   */
+  doctor() {
+    this.ensureInitialized();
+    const index = this.getIndex();
+    const stats = this.getStorageStats();
+    const worktree = this.getWorktreeStatus();
+
+    let verifiedBlobs = 0;
+    let corruptedBlobs = 0;
+    let missingBlobs = 0;
+
+    // 1. Verify every physical blob's SHA-256 matches its content-addressable path
+    if (fs.existsSync(this.objectsDir)) {
+      for (const prefix of fs.readdirSync(this.objectsDir)) {
+        const sub = path.join(this.objectsDir, prefix);
+        if (!fs.statSync(sub).isDirectory()) continue;
+        for (const rest of fs.readdirSync(sub)) {
+          const expectedHash = `${prefix}${rest}`;
+          try {
+            const rawBuf = this.readBlob(expectedHash, false);
+            const actualHash = crypto.createHash('sha256').update(rawBuf).digest('hex');
+            if (actualHash === expectedHash) {
+              verifiedBlobs++;
+            } else {
+              corruptedBlobs++;
+            }
+          } catch {
+            corruptedBlobs++;
+          }
+        }
+      }
+    }
+
+    // 2. Verify all checkpoints reference existing blobs
+    for (const entry of index.checkpoints) {
+      const cp = this.getCheckpoint(entry.id);
+      if (!cp || !cp.tree) continue;
+      for (const meta of Object.values(cp.tree)) {
+        if (!this.blobExists(meta.hash)) {
+          missingBlobs++;
+        }
+      }
+    }
+
+    // 3. Check Git stealth status
+    const gitExcludePath = path.join(this.workspaceRoot, '.git', 'info', 'exclude');
+    const hasGit = fs.existsSync(path.join(this.workspaceRoot, '.git'));
+    let gitStealthActive = !hasGit;
+    if (hasGit && fs.existsSync(gitExcludePath)) {
+      gitStealthActive = fs.readFileSync(gitExcludePath, 'utf8').includes('.chronos');
+    }
+
+    return {
+      healthy: corruptedBlobs === 0 && missingBlobs === 0,
+      verifiedBlobs,
+      corruptedBlobs,
+      missingBlobs,
+      gitStealthActive,
+      hasGit,
+      stats,
+      worktree
     };
   }
 }

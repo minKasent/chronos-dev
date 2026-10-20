@@ -17,7 +17,9 @@ const c = {
   yellow: '\x1b[33m',
   cyan: '\x1b[36m',
   magenta: '\x1b[35m',
-  gray: '\x1b[90m'
+  gray: '\x1b[90m',
+  intraDel: '\x1b[41m\x1b[97m\x1b[1m',
+  intraAdd: '\x1b[42m\x1b[30m\x1b[1m'
 };
 
 function printBanner() {
@@ -25,7 +27,7 @@ function printBanner() {
     `${c.cyan}${c.bold}╭──────────────────────────────────────────────────────────────────────╮${c.reset}`
   );
   console.log(
-    `${c.cyan}${c.bold}│ ⏱  CHRONOS-DEV v${pkg.version} // Flight Recorder & Code Time Machine        │${c.reset}`
+    `${c.cyan}${c.bold}│ ⏱  CHRONOS STUDIO v${pkg.version} // Flight Recorder & Code Time Machine     │${c.reset}`
   );
   console.log(
     `${c.cyan}${c.bold}╰──────────────────────────────────────────────────────────────────────╯${c.reset}`
@@ -46,9 +48,21 @@ function formatStatusBadge(cp, isLastGreen = false) {
   return `${c.magenta}${c.bold}📸 ${cp.trigger.toUpperCase()}${c.reset}${tagsStr}`;
 }
 
+function formatIntraLineAnsi(line, baseColor, highlightBg) {
+  if (!line.intra || !line.intra.mid) {
+    return `${baseColor}${line.text}${c.reset}`;
+  }
+  return (
+    `${baseColor}${line.intra.prefix}${c.reset}` +
+    `${highlightBg}${line.intra.mid}${c.reset}` +
+    `${baseColor}${line.intra.suffix}${c.reset}`
+  );
+}
+
 function printTimeline(engine) {
   const index = engine.getIndex();
   const stats = engine.getStorageStats();
+  const worktree = engine.getWorktreeStatus();
   const lastGreen = engine.resolveCheckpoint('--last-green');
   const lastGreenId = lastGreen ? lastGreen.id : null;
 
@@ -57,8 +71,19 @@ function printTimeline(engine) {
     `${c.gray}Workspace:${c.reset} ${engine.workspaceRoot}\n` +
       `${c.gray}CAS Store:${c.reset} ${c.cyan}${stats.checkpointCount} checkpoints${c.reset} | ` +
       `${c.cyan}${stats.uniqueBlobs} unique blobs${c.reset} | ` +
-      `Deduplication saved ${c.green}${c.bold}${stats.savedPercent}%${c.reset} (${(stats.physicalCompressedBytes / 1024).toFixed(1)} KB on disk)\n`
+      `Deduplication saved ${c.green}${c.bold}${stats.savedPercent}%${c.reset} (${(stats.physicalCompressedBytes / 1024).toFixed(1)} KB on disk)`
   );
+
+  if (worktree.isDirty) {
+    console.log(
+      `${c.yellow}${c.bold}⚠️  Live Worktree:${c.reset} ${worktree.changedFilesCount} unsaved file(s) modified since ${worktree.latestCheckpointId} (${c.green}+${worktree.addedLines}${c.reset}/${c.red}-${worktree.removedLines}${c.reset})`
+    );
+  } else if (index.checkpoints.length > 0) {
+    console.log(
+      `${c.green}✨ Live Worktree:${c.reset} Clean (matches latest checkpoint ${worktree.latestCheckpointId})`
+    );
+  }
+  console.log('');
 
   if (index.checkpoints.length === 0) {
     console.log(`${c.yellow}No checkpoints recorded yet. Run 'ch r <command>' or 'ch snap'.${c.reset}`);
@@ -95,9 +120,13 @@ function printDiffFilesList(files) {
         const oldNum = line.oldLine ? String(line.oldLine).padStart(3) : '   ';
         const newNum = line.newLine ? String(line.newLine).padStart(3) : '   ';
         if (line.type === 'add') {
-          console.log(`${c.gray}${oldNum} ${newNum} │${c.reset} ${c.green}+ ${line.text}${c.reset}`);
+          console.log(
+            `${c.gray}${oldNum} ${newNum} │${c.reset} ${c.green}+ ${formatIntraLineAnsi(line, c.green, c.intraAdd)}`
+          );
         } else if (line.type === 'del') {
-          console.log(`${c.gray}${oldNum} ${newNum} │${c.reset} ${c.red}- ${line.text}${c.reset}`);
+          console.log(
+            `${c.gray}${oldNum} ${newNum} │${c.reset} ${c.red}- ${formatIntraLineAnsi(line, c.red, c.intraDel)}`
+          );
         } else {
           console.log(`${c.gray}${oldNum} ${newNum} │   ${line.text}${c.reset}`);
         }
@@ -169,7 +198,6 @@ async function main() {
     return;
   }
 
-  // Support --cwd flag anywhere in arguments
   let cwd = process.cwd();
   const cwdIdx = args.indexOf('--cwd');
   if (cwdIdx !== -1 && args[cwdIdx + 1]) {
@@ -245,6 +273,58 @@ async function main() {
 
   if (cmd === 'timeline' || cmd === 'tl' || cmd === 'log' || cmd === 'status') {
     printTimeline(engine);
+    return;
+  }
+
+  if (cmd === 'history' || cmd === 'fh') {
+    const filePath = args[1];
+    if (!filePath) {
+      console.error(`${c.red}Usage: ch history <file-path> (e.g. ch history src/pricing.js)${c.reset}`);
+      process.exit(1);
+    }
+    const res = engine.getFileHistory(filePath);
+    printBanner();
+    console.log(`${c.bold}📜 FILE EVOLUTION HISTORY:${c.reset} ${c.cyan}${c.bold}${res.path}${c.reset}\n`);
+    if (res.history.length === 0) {
+      console.log(`${c.yellow}No history found for '${res.path}'.${c.reset}`);
+      return;
+    }
+    for (const h of res.history) {
+      console.log(
+        `  ${c.bold}#${String(h.seq).padEnd(2)}${c.reset} ${c.cyan}${h.id}${c.reset} [${h.changeType.toUpperCase()}] (${h.size}B) — ${h.label}`
+      );
+    }
+    return;
+  }
+
+  if (cmd === 'doctor' || cmd === 'doc') {
+    const doc = engine.doctor();
+    printBanner();
+    console.log(`${c.bold}🩺 CHRONOS STORAGE & CRYPTOGRAPHIC INTEGRITY DOCTOR${c.reset}\n`);
+    console.log(
+      `   ${c.gray}CAS SHA-256 Integrity:${c.reset}  ${
+        doc.healthy
+          ? `${c.green}${c.bold}✅ 100% HEALTHY (${doc.verifiedBlobs} blobs verified, 0 corrupted)${c.reset}`
+          : `${c.red}${c.bold}❌ CORRUPTION DETECTED (${doc.corruptedBlobs} corrupted, ${doc.missingBlobs} missing)${c.reset}`
+      }`
+    );
+    console.log(
+      `   ${c.gray}Git Stealth Mode:${c.reset}       ${
+        doc.gitStealthActive
+          ? `${c.green}✅ Active (.chronos/ hidden from git status)${c.reset}`
+          : `${c.yellow}⚠️ Inactive${c.reset}`
+      }`
+    );
+    console.log(
+      `   ${c.gray}Deduplication Savings:${c.reset}  ${c.cyan}${c.bold}${doc.stats.savedPercent}%${c.reset} (${(doc.stats.physicalCompressedBytes / 1024).toFixed(1)} KB physical vs ${(doc.stats.logicalBytes / 1024).toFixed(1)} KB logical)`
+    );
+    console.log(
+      `   ${c.gray}Live Worktree Status:${c.reset}   ${
+        doc.worktree.isDirty
+          ? `${c.yellow}⚠️ ${doc.worktree.changedFilesCount} unsaved file(s) modified${c.reset}`
+          : `${c.green}✨ Clean${c.reset}`
+      }\n`
+    );
     return;
   }
 
@@ -417,7 +497,7 @@ async function main() {
     const port = Number(portArg) || 4321;
     const { url } = await createServer(cwd, port);
     printBanner();
-    console.log(`${c.green}${c.bold}🚀 Chronos Flight Recorder Web UI v2.0 is live at:${c.reset} ${c.cyan}${c.bold}${url}${c.reset}`);
+    console.log(`${c.green}${c.bold}🚀 Chronos Studio Web UI v3.0 is live at:${c.reset} ${c.cyan}${c.bold}${url}${c.reset}`);
     console.log(`${c.gray}   Tracking workspace: ${cwd}${c.reset}`);
     if (shouldOpen) openBrowser(url);
     return;
@@ -431,32 +511,33 @@ async function main() {
     demoEngine.tagCheckpoint('2', 'v1-stable');
     printTimeline(demoEngine);
     console.log(`${c.yellow}${c.bold}🔥 Look! Checkpoints #1 and #2 passed (✅), then #3 and #4 broke the build (❌)!${c.reset}`);
-    console.log(`${c.cyan}Try running these v2.0 MAXPING commands:${c.reset}`);
-    console.log(`  1. ${c.bold}ch --cwd ./playground d${c.reset}                               (Diff vs --last-green)`);
+    console.log(`${c.cyan}Try running these v3.0 STUDIO commands:${c.reset}`);
+    console.log(`  1. ${c.bold}ch --cwd ./playground d${c.reset}                               (Diff with Intra-Line Highlight)`);
     console.log(`  2. ${c.bold}ch --cwd ./playground bisect node test.js${c.reset}             (Auto-Bisect exact culprit!)`);
     console.log(`  3. ${c.bold}ch --cwd ./playground pick --last-green src/shipping.js${c.reset} (Surgical 1-file restore)`);
-    console.log(`  4. ${c.bold}ch --cwd ./playground export${c.reset}                          (Generate Markdown Bug Report)`);
-    console.log(`  5. ${c.bold}ch --cwd ./playground back${c.reset}                            (Rewind all to --last-green)\n`);
+    console.log(`  4. ${c.bold}ch --cwd ./playground history src/pricing.js${c.reset}          (File Evolution Timeline)`);
+    console.log(`  5. ${c.bold}ch --cwd ./playground doctor${c.reset}                          (Cryptographic CAS Health Check)\n`);
     return;
   }
 
-  // Help menu
   printBanner();
   console.log(`
 ${c.bold}USAGE:${c.reset}
   chronos <command> [options]   ${c.gray}(or use the fast alias: ${c.cyan}${c.bold}ch${c.reset}${c.gray})${c.reset}
 
-${c.bold}ULTRA-FAST ALIASES (v2.0 MAXPING):${c.reset}
+${c.bold}ULTRA-FAST ALIASES (v3.0 STUDIO EDITION):${c.reset}
   ${c.cyan}ch r <cmd>${c.reset}                        Run command & record flight checkpoint (e.g. ${c.bold}ch r npm test${c.reset})
-  ${c.cyan}ch d [ref]${c.reset}                        Diff current broken code against ${c.green}--last-green${c.reset} (or tag/id)
+  ${c.cyan}ch d [ref]${c.reset}                        Diff current broken code against ${c.green}--last-green${c.reset} (with intra-line highlight)
   ${c.cyan}ch pick <ref> <file...>${c.reset}           Surgically restore ONLY specific file(s) from a checkpoint
   ${c.cyan}ch bisect <cmd>${c.reset}                   Binary-search timeline to find the exact checkpoint that broke tests
+  ${c.cyan}ch history <file>${c.reset}                 Show complete evolution history of a single file across runs
+  ${c.cyan}ch doctor${c.reset}                         Verify SHA-256 CAS integrity, Git stealth & worktree status
   ${c.cyan}ch tag <ref> <name>${c.reset}               Bookmark a checkpoint (e.g. ${c.bold}ch tag --last-green v1-stable${c.reset})
   ${c.cyan}ch export [ref] [--out file.md]${c.reset}   Generate secret-redacted Markdown Bug Report
   ${c.cyan}ch back [ref]${c.reset}                     Rewind entire workspace to ${c.green}--last-green${c.reset} (with safety backup)
   ${c.cyan}ch tl${c.reset}                             Show visual timeline of checkpoints, tags & storage stats
   ${c.cyan}ch i [id]${c.reset}                         Inspect terminal logs (stdout/stderr) & diff of a checkpoint
-  ${c.cyan}ch ui [--open]${c.reset}                    Launch real-time SSE Flight Recorder Web Dashboard
+  ${c.cyan}ch ui [--open]${c.reset}                    Launch Chronos Studio v3.0 Web UI (Split Diff + Keyboard First)
   ${c.cyan}ch gc [keepCount]${c.reset}                 Prune old checkpoints while preserving ${c.green}--last-green${c.reset} & tags
 `);
 }

@@ -40,6 +40,36 @@ function redactSecrets(text = '') {
 }
 
 /**
+ * Compute intra-line character prefix/suffix segments between a deleted line and an added line
+ * Returns { prefix, oldMid, newMid, suffix } so UI/CLI can highlight exact changed characters
+ */
+function computeIntraLineSegments(oldStr = '', newStr = '') {
+  let start = 0;
+  const minLen = Math.min(oldStr.length, newStr.length);
+  while (start < minLen && oldStr[start] === newStr[start]) {
+    start++;
+  }
+
+  let oldEnd = oldStr.length;
+  let newEnd = newStr.length;
+  while (
+    oldEnd > start &&
+    newEnd > start &&
+    oldStr[oldEnd - 1] === newStr[newEnd - 1]
+  ) {
+    oldEnd--;
+    newEnd--;
+  }
+
+  return {
+    prefix: oldStr.slice(0, start),
+    oldMid: oldStr.slice(start, oldEnd),
+    newMid: newStr.slice(start, newEnd),
+    suffix: oldStr.slice(oldEnd)
+  };
+}
+
+/**
  * Compute line-by-line diff using Longest Common Subsequence (LCS)
  * Returns structured diff lines and statistics (+added / -removed)
  */
@@ -109,6 +139,39 @@ function computeLineDiff(oldText = '', newText = '') {
 }
 
 /**
+ * Enrich hunk lines with intra-line character diff metadata when adjacent del/add blocks match up
+ */
+function enrichIntraLineDiffs(lines) {
+  let idx = 0;
+  while (idx < lines.length) {
+    if (lines[idx].type === 'del') {
+      const delStart = idx;
+      while (idx < lines.length && lines[idx].type === 'del') idx++;
+      const delCount = idx - delStart;
+
+      const addStart = idx;
+      while (idx < lines.length && lines[idx].type === 'add') idx++;
+      const addCount = idx - addStart;
+
+      const pairs = Math.min(delCount, addCount);
+      for (let k = 0; k < pairs; k++) {
+        const delLine = lines[delStart + k];
+        const addLine = lines[addStart + k];
+        const seg = computeIntraLineSegments(delLine.text, addLine.text);
+        // Only highlight intra-line segments if they share some common prefix or suffix
+        if (seg.prefix.length > 0 || seg.suffix.length > 0) {
+          delLine.intra = { prefix: seg.prefix, mid: seg.oldMid, suffix: seg.suffix };
+          addLine.intra = { prefix: seg.prefix, mid: seg.newMid, suffix: seg.suffix };
+        }
+      }
+    } else {
+      idx++;
+    }
+  }
+  return lines;
+}
+
+/**
  * Filter ops to only show context lines around changes (default 3 lines of context)
  */
 function buildContextualHunks(ops, contextRadius = 3) {
@@ -135,10 +198,14 @@ function buildContextualHunks(ops, contextRadius = 3) {
         currentHunk = { lines: [] };
         hunks.push(currentHunk);
       }
-      currentHunk.lines.push(ops[idx]);
+      currentHunk.lines.push({ ...ops[idx] });
     } else {
       currentHunk = null;
     }
+  }
+
+  for (const hunk of hunks) {
+    enrichIntraLineDiffs(hunk.lines);
   }
 
   return hunks;
@@ -148,6 +215,7 @@ module.exports = {
   isBinaryBuffer,
   stripAnsi,
   redactSecrets,
+  computeIntraLineSegments,
   computeLineDiff,
   buildContextualHunks
 };

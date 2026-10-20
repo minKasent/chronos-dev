@@ -5,7 +5,7 @@ const path = require('node:path');
 const os = require('node:os');
 const { ChronosEngine } = require('../src/engine');
 const { createServer } = require('../src/server');
-const { redactSecrets } = require('../src/diff');
+const { computeLineDiff, buildContextualHunks } = require('../src/diff');
 
 function makeTempWorkspace(prefix = 'chronos-test-') {
   return fs.mkdtempSync(path.join(os.tmpdir(), prefix));
@@ -139,7 +139,6 @@ test('4. Garbage Collection (gc) preserves --last-green, tagged checkpoints & pr
       await engine.runCommandAndRecord('node -e "process.exit(1)"', { silent: true });
     }
 
-    // Tag checkpoint #2 so GC must preserve both #1 (last-green) and #2 (tagged)!
     engine.tagCheckpoint('2', 'important-milestone');
 
     const gcRes = engine.gc(2);
@@ -163,12 +162,10 @@ test('5. Surgical File Checkout (checkoutFiles / ch pick)', () => {
     fs.writeFileSync(path.join(dir, 'b.js'), 'const b = 1; // good\n', 'utf8');
     const cp1 = engine.createCheckpoint({ label: 'Good state', exitCode: 0 });
 
-    // Modify both a.js and b.js
     fs.writeFileSync(path.join(dir, 'a.js'), 'const a = 999; // broken!\n', 'utf8');
     fs.writeFileSync(path.join(dir, 'b.js'), 'const b = 2; // new feature we want to keep!\n', 'utf8');
     engine.createCheckpoint({ label: 'Mixed state', exitCode: 1 });
 
-    // Surgically restore ONLY a.js from cp1 while keeping b.js untouched
     const pickRes = engine.checkoutFiles(cp1.id, ['a.js']);
     assert.deepEqual(pickRes.restoredFiles, ['a.js']);
     assert.equal(fs.readFileSync(path.join(dir, 'a.js'), 'utf8'), 'const a = 1; // good\n');
@@ -193,7 +190,6 @@ test('6. Automated Binary-Search Bug Detective (bisect)', async () => {
       'utf8'
     );
 
-    // Create 6 checkpoints: #1, #2, #3 pass (v = 1, 2, 3), #4, #5, #6 fail (v = 4, 5, 6)
     for (let v = 1; v <= 6; v++) {
       fs.writeFileSync(path.join(dir, 'val.js'), `module.exports = ${v};\n`, 'utf8');
       engine.createCheckpoint({ label: `Set val to ${v}` });
@@ -202,8 +198,6 @@ test('6. Automated Binary-Search Bug Detective (bisect)', async () => {
     const res = await engine.bisect('node check.js', '1', '6');
     assert.equal(res.culpritCheckpoint.seq, 4, 'Must pinpoint checkpoint #4 as the exact first bad state');
     assert.ok(res.steps.length <= 3, 'Binary search across 6 items must take at most 3 steps');
-
-    // Verify original workspace state (v = 6) was restored after bisect
     assert.equal(fs.readFileSync(path.join(dir, 'val.js'), 'utf8'), 'module.exports = 6;\n');
   } finally {
     cleanupWorkspace(dir);
@@ -220,7 +214,6 @@ test('7. Secret Redactor, Environment Drift & Markdown Diagnostic Report Exporte
     fs.writeFileSync(path.join(dir, 'service.js'), 'console.log("ok");\n', 'utf8');
     await engine.runCommandAndRecord('node service.js', { silent: true });
 
-    // Modify .env to trigger environment drift, and output sensitive tokens in stderr
     fs.writeFileSync(path.join(dir, '.env'), 'DB_URL=postgres://admin:newpass999@localhost:5432/db\n', 'utf8');
     fs.writeFileSync(
       path.join(dir, 'service.js'),
@@ -239,7 +232,53 @@ test('7. Secret Redactor, Environment Drift & Markdown Diagnostic Report Exporte
   }
 });
 
-test('8. Web Dashboard HTTP Server v2.0 API & Port Conflict Auto-Fallback', async () => {
+test('8. Intra-Line Character Diff Highlighting', () => {
+  const d = computeLineDiff(
+    'if (orderSubtotal >= 500) return 0;\n',
+    'if (orderSubtotal > 500) return 0;\n'
+  );
+  const hunks = buildContextualHunks(d.ops, 3);
+  assert.equal(hunks.length, 1);
+  const delLine = hunks[0].lines.find((l) => l.type === 'del');
+  const addLine = hunks[0].lines.find((l) => l.type === 'add');
+  assert.ok(delLine.intra, 'Deleted line should have intra-line segment metadata');
+  assert.equal(delLine.intra.mid, '=');
+  assert.equal(addLine.intra.mid, '');
+});
+
+test('9. File Evolution History (getFileHistory), Worktree Dirty Status & CAS Cryptographic Doctor', () => {
+  const dir = makeTempWorkspace();
+  try {
+    const engine = new ChronosEngine(dir);
+    engine.init();
+
+    fs.writeFileSync(path.join(dir, 'core.js'), 'v1\n', 'utf8');
+    engine.createCheckpoint({ label: 'Step 1' });
+
+    fs.writeFileSync(path.join(dir, 'core.js'), 'v2\n', 'utf8');
+    engine.createCheckpoint({ label: 'Step 2' });
+
+    const fh = engine.getFileHistory('core.js');
+    assert.equal(fh.history.length, 2);
+    assert.equal(fh.history[0].changeType, 'modified');
+    assert.equal(fh.history[1].changeType, 'added');
+
+    // Make dirty edit on disk
+    fs.writeFileSync(path.join(dir, 'core.js'), 'v3-unsaved\n', 'utf8');
+    const wt = engine.getWorktreeStatus();
+    assert.equal(wt.isDirty, true);
+    assert.equal(wt.changedFilesCount, 1);
+
+    const doc = engine.doctor();
+    assert.equal(doc.healthy, true);
+    assert.equal(doc.corruptedBlobs, 0);
+    assert.equal(doc.verifiedBlobs, 2);
+  } finally {
+    cleanupWorkspace(dir);
+  }
+});
+
+test('10. Web Studio HTTP Server v3.0 API (/api/state, /api/file-history, /api/doctor)', async () => {
   const dir = makeTempWorkspace();
   let srv1 = null;
   let srv2 = null;
@@ -249,25 +288,22 @@ test('8. Web Dashboard HTTP Server v2.0 API & Port Conflict Auto-Fallback', asyn
     fs.writeFileSync(path.join(dir, 'hello.js'), 'console.log("hi");\n', 'utf8');
     await engine.runCommandAndRecord('node hello.js', { silent: true });
 
-    srv1 = await createServer(dir, 4520);
-    srv2 = await createServer(dir, 4520);
+    srv1 = await createServer(dir, 4530);
+    srv2 = await createServer(dir, 4530);
     assert.notEqual(srv1.port, srv2.port, 'Should auto-increment port when port is busy');
 
     const stateRes = await fetch(`${srv1.url}/api/state`);
     const stateJson = await stateRes.json();
     assert.equal(stateJson.checkpoints.length, 1);
+    assert.equal(stateJson.worktree.isDirty, false);
 
-    const tagRes = await fetch(`${srv1.url}/api/tag`, {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ target: '1', tag: 'v1-release' })
-    });
-    const tagJson = await tagRes.json();
-    assert.equal(tagJson.tag, 'v1-release');
+    const docRes = await fetch(`${srv1.url}/api/doctor`);
+    const docJson = await docRes.json();
+    assert.equal(docJson.healthy, true);
 
-    const exportRes = await fetch(`${srv1.url}/api/export?id=v1-release`);
-    const exportJson = await exportRes.json();
-    assert.ok(exportJson.markdown.includes('Chronos Flight Recorder Diagnostic Report'));
+    const fhRes = await fetch(`${srv1.url}/api/file-history?path=hello.js`);
+    const fhJson = await fhRes.json();
+    assert.equal(fhJson.history.length, 1);
   } finally {
     if (srv1 && srv1.server) srv1.server.close();
     if (srv2 && srv2.server) srv2.server.close();

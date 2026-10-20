@@ -1,0 +1,1199 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>CHRONOS STUDIO v3.0 // Flight Recorder & Code Time Machine</title>
+  <style>
+    :root {
+      --bg-0: #06090f;
+      --bg-1: #0b101b;
+      --bg-2: #111827;
+      --bg-3: #1b253b;
+      --bg-glass: rgba(15, 23, 42, 0.85);
+      --border: #1f2d47;
+      --border-hi: #334970;
+      --text: #f1f5f9;
+      --muted: #8b9bb4;
+      --green: #10b981;
+      --green-bg: rgba(16, 185, 129, 0.13);
+      --green-hi: rgba(16, 185, 129, 0.42);
+      --red: #f43f5e;
+      --red-bg: rgba(244, 63, 94, 0.14);
+      --red-hi: rgba(244, 63, 94, 0.45);
+      --cyan: #06b6d4;
+      --cyan-bg: rgba(6, 182, 212, 0.14);
+      --amber: #f59e0b;
+      --amber-bg: rgba(245, 158, 11, 0.15);
+      --purple: #a855f7;
+      --purple-bg: rgba(168, 85, 247, 0.15);
+      --font-mono: 'JetBrains Mono', 'Cascadia Code', 'Fira Code', Consolas, monospace;
+      --font-sans: 'Inter', system-ui, -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
+    }
+    * { box-sizing: border-box; margin: 0; padding: 0; }
+    body {
+      background: var(--bg-0);
+      color: var(--text);
+      font-family: var(--font-sans);
+      height: 100vh;
+      display: flex;
+      flex-direction: column;
+      overflow: hidden;
+      user-select: none;
+    }
+    pre, code, .diff-table, .terminal-output { user-select: text; }
+
+    /* Top Header */
+    header {
+      background: var(--bg-1);
+      border-bottom: 1px solid var(--border);
+      padding: 10px 18px;
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      gap: 12px;
+      flex-wrap: wrap;
+    }
+    .brand { display: flex; align-items: center; gap: 11px; }
+    .brand-logo {
+      width: 34px; height: 34px; border-radius: 9px;
+      background: linear-gradient(135deg, var(--cyan), var(--purple));
+      display: flex; align-items: center; justify-content: center;
+      font-size: 17px; color: #fff;
+      box-shadow: 0 0 20px rgba(6, 182, 212, 0.35);
+    }
+    .brand-title { font-weight: 800; font-size: 14.5px; letter-spacing: 0.3px; display: flex; align-items: center; gap: 8px; }
+    .brand-sub { font-size: 11px; color: var(--muted); font-family: var(--font-mono); margin-top: 2px; }
+
+    .stats-bar { display: flex; align-items: center; gap: 8px; font-family: var(--font-mono); font-size: 11px; flex-wrap: wrap; }
+    .stat-pill {
+      background: var(--bg-2); border: 1px solid var(--border);
+      padding: 5px 9px; border-radius: 6px; display: inline-flex; align-items: center; gap: 5px;
+    }
+    .stat-pill strong { color: var(--cyan); }
+    .dirty-pill {
+      background: var(--amber-bg); border: 1px solid rgba(245, 158, 11, 0.45);
+      color: #fbbf24; padding: 5px 10px; border-radius: 6px; cursor: pointer;
+      display: none; align-items: center; gap: 6px; font-weight: 600;
+    }
+    .dirty-pill:hover { background: rgba(245, 158, 11, 0.25); }
+
+    .actions-bar { display: flex; align-items: center; gap: 6px; flex-wrap: wrap; }
+    button {
+      cursor: pointer; font-family: var(--font-sans); font-weight: 600; font-size: 12px;
+      padding: 6px 10px; border-radius: 6px; border: 1px solid var(--border);
+      background: var(--bg-2); color: var(--text); transition: all 0.14s ease;
+      display: inline-flex; align-items: center; gap: 6px;
+    }
+    button:hover:not(:disabled) { background: var(--bg-3); border-color: var(--border-hi); }
+    button:disabled { opacity: 0.55; cursor: not-allowed; }
+    button.btn-green { background: var(--green-bg); border-color: rgba(16, 185, 129, 0.45); color: #34d399; }
+    button.btn-green:hover:not(:disabled) { background: rgba(16, 185, 129, 0.24); }
+    button.btn-amber { background: var(--amber-bg); border-color: rgba(245, 158, 11, 0.45); color: #fbbf24; }
+    button.btn-amber:hover:not(:disabled) { background: rgba(245, 158, 11, 0.25); }
+    button.btn-cyan { background: var(--cyan-bg); border-color: rgba(6, 182, 212, 0.45); color: #22d3ee; }
+    button.btn-cyan:hover:not(:disabled) { background: rgba(6, 182, 212, 0.25); }
+    button.btn-purple { background: var(--purple-bg); border-color: rgba(168, 85, 247, 0.45); color: #c084fc; }
+    button.btn-purple:hover:not(:disabled) { background: rgba(168, 85, 247, 0.25); }
+    button.btn-sm { padding: 3px 8px; font-size: 11px; font-family: var(--font-mono); }
+
+    kbd {
+      background: rgba(255, 255, 255, 0.08);
+      border: 1px solid rgba(255, 255, 255, 0.15);
+      border-radius: 4px;
+      padding: 1px 5px;
+      font-family: var(--font-mono);
+      font-size: 10px;
+      color: var(--muted);
+    }
+
+    /* Command Runner Bar */
+    .runner-bar {
+      background: #070b13; border-bottom: 1px solid var(--border);
+      padding: 7px 18px; display: flex; align-items: center; gap: 10px;
+    }
+    .runner-prompt { font-family: var(--font-mono); color: var(--cyan); font-size: 12.5px; font-weight: 700; }
+    .runner-input {
+      flex: 1; background: var(--bg-1); border: 1px solid var(--border); color: var(--text);
+      font-family: var(--font-mono); font-size: 12.5px; padding: 6px 12px; border-radius: 6px; outline: none;
+    }
+    .runner-input:focus { border-color: var(--cyan); box-shadow: 0 0 0 2px rgba(6, 182, 212, 0.15); }
+
+    @keyframes spin { to { transform: rotate(360deg); } }
+    .spinner {
+      width: 12px; height: 12px; border: 2px solid rgba(255,255,255,0.25);
+      border-top-color: currentColor; border-radius: 50%;
+      animation: spin 0.7s linear infinite; display: inline-block;
+    }
+
+    /* Main Workspace Grid */
+    .workspace-grid { display: grid; grid-template-columns: 375px 1fr; flex: 1; overflow: hidden; }
+
+    /* Left Pane: Timeline */
+    .timeline-pane { background: var(--bg-1); border-right: 1px solid var(--border); display: flex; flex-direction: column; overflow: hidden; }
+    .sparkline-box {
+      padding: 8px 12px; border-bottom: 1px solid var(--border); background: #080d16;
+    }
+    .sparkline-header {
+      display: flex; justify-content: space-between; font-size: 10.5px; font-family: var(--font-mono); color: var(--muted); margin-bottom: 5px;
+    }
+    .sparkline-bars {
+      display: flex; align-items: flex-end; gap: 3px; height: 28px;
+    }
+    .spark-bar {
+      flex: 1; min-width: 4px; max-width: 14px; border-radius: 2px 2px 0 0; cursor: pointer;
+      transition: opacity 0.12s, transform 0.12s; opacity: 0.75;
+    }
+    .spark-bar:hover, .spark-bar.active { opacity: 1; transform: scaleY(1.08); }
+    .spark-pass { background: var(--green); }
+    .spark-fail { background: var(--red); }
+    .spark-snap { background: var(--purple); }
+
+    .timeline-controls {
+      padding: 8px 10px; border-bottom: 1px solid var(--border); display: flex; flex-direction: column; gap: 7px;
+    }
+    .filter-pills { display: flex; gap: 4px; }
+    .filter-pill {
+      flex: 1; justify-content: center; padding: 4px 6px; font-size: 11px; font-family: var(--font-mono);
+      background: var(--bg-2); border: 1px solid var(--border); color: var(--muted);
+    }
+    .filter-pill.active { background: var(--bg-3); color: var(--cyan); border-color: var(--cyan); }
+    .search-input {
+      width: 100%; background: var(--bg-0); border: 1px solid var(--border); color: var(--text);
+      font-family: var(--font-mono); font-size: 11.5px; padding: 5px 9px; border-radius: 5px; outline: none;
+    }
+    .search-input:focus { border-color: var(--cyan); }
+
+    .timeline-list { flex: 1; overflow-y: auto; padding: 8px 10px; display: flex; flex-direction: column; gap: 7px; }
+    .cp-card {
+      background: var(--bg-2); border: 1px solid var(--border); border-left: 4px solid var(--cyan);
+      border-radius: 7px; padding: 9px 11px; cursor: pointer; transition: all 0.12s ease;
+    }
+    .cp-card:hover { background: var(--bg-3); }
+    .cp-card.active {
+      border-color: var(--cyan); box-shadow: 0 0 0 1px var(--cyan); background: var(--bg-3);
+    }
+    .cp-card.status-pass { border-left-color: var(--green); }
+    .cp-card.status-fail { border-left-color: var(--red); }
+    .cp-card.status-snap { border-left-color: var(--purple); }
+    .cp-top { display: flex; align-items: center; justify-content: space-between; margin-bottom: 4px; gap: 4px; flex-wrap: wrap; }
+    .cp-id { font-family: var(--font-mono); font-size: 11.5px; font-weight: 700; display: flex; align-items: center; gap: 5px; flex-wrap: wrap; }
+    .badge { font-family: var(--font-mono); font-size: 10px; font-weight: 700; padding: 2px 6px; border-radius: 4px; }
+    .badge-pass { background: var(--green-bg); color: #34d399; border: 1px solid rgba(16,185,129,0.3); }
+    .badge-fail { background: var(--red-bg); color: #fb7185; border: 1px solid rgba(244,63,94,0.3); }
+    .badge-snap { background: var(--purple-bg); color: #c084fc; border: 1px solid rgba(168,85,247,0.3); }
+    .badge-tag { background: var(--amber-bg); color: #fbbf24; border: 1px solid rgba(245,158,11,0.35); }
+    .cp-cmd { font-family: var(--font-mono); font-size: 12px; color: #cbd5e1; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; margin-bottom: 5px; }
+    .cp-meta { display: flex; justify-content: space-between; font-size: 10.5px; color: var(--muted); font-family: var(--font-mono); }
+    .diff-stat-add { color: #34d399; }
+    .diff-stat-del { color: #fb7185; }
+
+    /* Right Pane: Detail & Compare Studio */
+    .detail-pane { display: flex; flex-direction: column; overflow: hidden; background: var(--bg-0); }
+
+    /* Context & Compare Bar */
+    .compare-bar {
+      background: #090e19; border-bottom: 1px solid var(--border); padding: 8px 18px;
+      display: flex; align-items: center; justify-content: space-between; gap: 12px; flex-wrap: wrap;
+    }
+    .compare-selectors { display: flex; align-items: center; gap: 8px; font-family: var(--font-mono); font-size: 11.5px; flex-wrap: wrap; }
+    select.cp-select {
+      background: var(--bg-2); border: 1px solid var(--border); color: var(--text);
+      font-family: var(--font-mono); font-size: 11.5px; padding: 4px 8px; border-radius: 5px; outline: none;
+    }
+    select.cp-select:focus { border-color: var(--cyan); }
+
+    .detail-header {
+      padding: 10px 18px; background: var(--bg-1); border-bottom: 1px solid var(--border);
+      display: flex; justify-content: space-between; align-items: center; gap: 10px; flex-wrap: wrap;
+    }
+    .detail-title { font-family: var(--font-mono); font-size: 13.5px; font-weight: 700; display: flex; align-items: center; gap: 8px; flex-wrap: wrap; }
+
+    .tab-bar {
+      background: var(--bg-1); border-bottom: 1px solid var(--border); padding: 0 18px;
+      display: flex; justify-content: space-between; align-items: center;
+    }
+    .tab-group { display: flex; gap: 16px; }
+    .tab-btn {
+      background: transparent; border: none; border-bottom: 2px solid transparent;
+      border-radius: 0; padding: 9px 4px; color: var(--muted); font-size: 12px;
+    }
+    .tab-btn:hover { background: transparent; color: var(--text); }
+    .tab-btn.active { color: var(--cyan); border-bottom-color: var(--cyan); }
+
+    .detail-body { flex: 1; overflow-y: auto; padding: 14px 18px; display: flex; flex-direction: column; gap: 14px; }
+    .panel { background: var(--bg-1); border: 1px solid var(--border); border-radius: 8px; overflow: hidden; }
+    .panel-title {
+      background: var(--bg-2); padding: 7px 13px; font-size: 11.5px; font-weight: 700;
+      font-family: var(--font-mono); border-bottom: 1px solid var(--border);
+      display: flex; justify-content: space-between; align-items: center; gap: 8px; flex-wrap: wrap;
+    }
+    .terminal-output {
+      padding: 12px; font-family: var(--font-mono); font-size: 12px; line-height: 1.55;
+      white-space: pre-wrap; background: #04070d; color: #d1d5db; max-height: 210px; overflow-y: auto;
+    }
+    .terminal-output.nowrap { white-space: pre; overflow-x: auto; }
+    .terminal-stderr { color: #fda4af; border-top: 1px dashed rgba(244,63,94,0.3); margin-top: 8px; padding-top: 8px; }
+
+    /* File Jump Bar */
+    .file-jump-bar {
+      display: flex; align-items: center; justify-content: space-between; gap: 8px; flex-wrap: wrap;
+      background: var(--bg-1); border: 1px solid var(--border); border-radius: 7px; padding: 7px 12px;
+    }
+    .file-pills { display: flex; gap: 6px; flex-wrap: wrap; }
+    .file-pill {
+      font-family: var(--font-mono); font-size: 11px; padding: 3px 8px; border-radius: 5px;
+      background: var(--bg-2); border: 1px solid var(--border); cursor: pointer;
+    }
+    .file-pill:hover { border-color: var(--cyan); }
+
+    /* Diff Tables (Unified & Split Side-by-Side) */
+    .diff-file { border: 1px solid var(--border); border-radius: 8px; overflow: hidden; margin-bottom: 12px; background: var(--bg-1); }
+    .diff-file-header {
+      background: var(--bg-2); padding: 7px 13px; font-family: var(--font-mono); font-size: 12px;
+      font-weight: 700; display: flex; justify-content: space-between; align-items: center;
+      border-bottom: 1px solid var(--border); cursor: pointer;
+    }
+    .diff-file.collapsed .diff-file-body { display: none; }
+    .diff-table { width: 100%; border-collapse: collapse; font-family: var(--font-mono); font-size: 12px; table-layout: fixed; }
+    .diff-table td { padding: 2px 9px; white-space: pre-wrap; word-break: break-all; vertical-align: top; }
+    .diff-ln { width: 42px; text-align: right; color: #4b5563; user-select: none; border-right: 1px solid #192338; }
+    .diff-row-add { background: rgba(16, 185, 129, 0.12); color: #d1fae5; }
+    .diff-row-del { background: rgba(244, 63, 94, 0.14); color: #ffe4e6; }
+    .diff-row-eq { color: #94a3b8; }
+    .diff-empty-cell { background: rgba(15, 23, 42, 0.45); }
+    .diff-hunk-sep { background: #0e1525; color: var(--cyan); font-family: var(--font-mono); font-size: 11px; padding: 3px 12px; }
+    mark.intra-del { background: var(--red-hi); color: #fff; border-radius: 2px; padding: 0 1px; }
+    mark.intra-add { background: var(--green-hi); color: #fff; border-radius: 2px; padding: 0 1px; }
+
+    /* Modals & Command Palette */
+    .modal-backdrop {
+      position: fixed; inset: 0; background: rgba(3, 6, 12, 0.75); backdrop-filter: blur(4px);
+      display: none; align-items: flex-start; justify-content: center; padding-top: 10vh; z-index: 200;
+    }
+    .modal-backdrop.open { display: flex; }
+    .modal-card {
+      width: 560px; max-width: 92vw; background: var(--bg-1); border: 1px solid var(--border-hi);
+      border-radius: 10px; box-shadow: 0 20px 50px rgba(0,0,0,0.7); overflow: hidden;
+    }
+    .modal-header {
+      padding: 12px 16px; background: var(--bg-2); border-bottom: 1px solid var(--border);
+      display: flex; justify-content: space-between; align-items: center; font-weight: 700; font-size: 13px;
+    }
+    .modal-body { padding: 14px 16px; max-height: 65vh; overflow-y: auto; }
+    .palette-item {
+      padding: 9px 12px; border-radius: 6px; display: flex; justify-content: space-between; align-items: center;
+      cursor: pointer; font-size: 12.5px;
+    }
+    .palette-item:hover, .palette-item.selected { background: var(--bg-3); color: var(--cyan); }
+
+    /* Actionable Toast */
+    .toast {
+      position: fixed; bottom: 20px; right: 20px; background: var(--bg-2); border: 1px solid var(--cyan);
+      color: var(--text); padding: 11px 16px; border-radius: 8px; font-family: var(--font-mono);
+      font-size: 12px; box-shadow: 0 12px 30px rgba(0,0,0,0.65); display: none; align-items: center; gap: 12px; z-index: 300;
+    }
+  </style>
+</head>
+<body>
+  <header>
+    <div class="brand">
+      <div class="brand-logo">⏱</div>
+      <div>
+        <div class="brand-title">
+          CHRONOS STUDIO v3.0
+          <span class="badge badge-pass">🟢 LIVE SSE</span>
+        </div>
+        <div class="brand-sub" id="workspace-path">Loading workspace...</div>
+      </div>
+    </div>
+
+    <div class="stats-bar">
+      <div class="dirty-pill" id="dirty-pill" onclick="manualSnap()" title="Working tree has unsaved changes vs latest checkpoint. Click to snapshot!">
+        ⚠️ <span id="dirty-text">Dirty worktree</span> · <u>📸 Snap Now</u>
+      </div>
+      <div class="stat-pill">Checkpoints: <strong id="stat-cp">0</strong></div>
+      <div class="stat-pill">CAS Blobs: <strong id="stat-blobs">0</strong></div>
+      <div class="stat-pill">Saved: <strong id="stat-saved">0%</strong></div>
+    </div>
+
+    <div class="actions-bar">
+      <button class="btn-green" onclick="compareLastGreen()">⚡ Diff Last Green <kbd>G</kbd></button>
+      <button class="btn-purple" onclick="openBisectModal()">🕵️‍♂️ Bisect <kbd>B</kbd></button>
+      <button class="btn-cyan" onclick="copyReport()">📋 Bug Report <kbd>E</kbd></button>
+      <button class="btn-amber" onclick="rewindLastGreen()">⏪ Rewind Green</button>
+      <button onclick="runDoctor()">🩺 Doctor</button>
+      <button onclick="openCommandPalette()">⌘ Palette <kbd>Ctrl+K</kbd></button>
+    </div>
+  </header>
+
+  <div class="runner-bar">
+    <span class="runner-prompt">ch r &gt;</span>
+    <input
+      type="text"
+      id="cmd-input"
+      class="runner-input"
+      placeholder="Run any command & record flight checkpoint (press '/' to focus, Enter to execute)"
+      value="node test.js"
+      onkeydown="if(event.key==='Enter') runCommand()"
+    />
+    <button class="btn-cyan" id="btn-run" onclick="runCommand()">
+      <span id="run-icon">▶</span> <span id="run-label">Run &amp; Snapshot</span>
+    </button>
+    <button onclick="manualSnap()">📸 Quick Snap</button>
+  </div>
+
+  <div class="workspace-grid">
+    <!-- Left Sidebar: Sparkline + Filter + Timeline -->
+    <aside class="timeline-pane">
+      <div class="sparkline-box">
+        <div class="sparkline-header">
+          <span>EXECUTION PULSE &amp; DURATION</span>
+          <span id="last-green-indicator" style="color: var(--green);"></span>
+        </div>
+        <div class="sparkline-bars" id="sparkline-bars"></div>
+      </div>
+
+      <div class="timeline-controls">
+        <div class="filter-pills">
+          <button class="filter-pill active" id="flt-all" onclick="setFilter('all')">All</button>
+          <button class="filter-pill" id="flt-pass" onclick="setFilter('pass')">✅ Pass</button>
+          <button class="filter-pill" id="flt-fail" onclick="setFilter('fail')">❌ Fail</button>
+          <button class="filter-pill" id="flt-tag" onclick="setFilter('tag')">🏷 Tagged</button>
+        </div>
+        <input
+          type="text"
+          id="timeline-search"
+          class="search-input"
+          placeholder="🔍 Filter by command, tag, or file name... (↑/↓ or J/K to navigate)"
+          oninput="renderTimeline()"
+        />
+      </div>
+
+      <div class="timeline-list" id="timeline-list"></div>
+    </aside>
+
+    <!-- Right Main Studio -->
+    <main class="detail-pane">
+      <div class="compare-bar">
+        <div class="compare-selectors">
+          <span style="color: var(--muted);">COMPARE BASE:</span>
+          <select class="cp-select" id="sel-base" onchange="onCustomCompareChange()"></select>
+          <span style="color: var(--cyan); font-weight: bold;">➔</span>
+          <span style="color: var(--muted);">TARGET:</span>
+          <select class="cp-select" id="sel-target" onchange="onCustomCompareChange()"></select>
+        </div>
+        <div style="display:flex; gap:6px; align-items:center;">
+          <button class="btn-sm" id="btn-view-mode" onclick="toggleDiffMode()">
+            🔀 Mode: <strong id="diff-mode-label">Split View</strong> <kbd>S</kbd>
+          </button>
+        </div>
+      </div>
+
+      <div class="detail-header">
+        <div class="detail-title" id="detail-title">Select a checkpoint</div>
+        <div id="detail-actions" style="display:flex; gap:7px;"></div>
+      </div>
+
+      <div class="tab-bar">
+        <div class="tab-group">
+          <button class="tab-btn active" id="tab-diff" onclick="switchTab('diff')">🔍 Code Diff &amp; Flight Log</button>
+          <button class="tab-btn" id="tab-files" onclick="switchTab('files')">📂 Time-Capsule File Explorer</button>
+        </div>
+        <div style="font-family: var(--font-mono); font-size: 11px; color: var(--muted);">
+          Tip: Use <kbd>↑</kbd><kbd>↓</kbd> or <kbd>J</kbd><kbd>K</kbd> to scrub through time
+        </div>
+      </div>
+
+      <div class="detail-body" id="detail-body"></div>
+    </main>
+  </div>
+
+  <!-- Generic Modal / Command Palette -->
+  <div class="modal-backdrop" id="modal-backdrop" onclick="if(event.target===this) closeModal()">
+    <div class="modal-card">
+      <div class="modal-header">
+        <span id="modal-title">Command Palette</span>
+        <button class="btn-sm" onclick="closeModal()">✕ <kbd>Esc</kbd></button>
+      </div>
+      <div class="modal-body" id="modal-body"></div>
+    </div>
+  </div>
+
+  <!-- Actionable Toast -->
+  <div class="toast" id="toast">
+    <span id="toast-msg"></span>
+    <span id="toast-action"></span>
+  </div>
+
+  <script>
+    let appState = null;
+    let selectedCpId = null;
+    let currentCpData = null;
+    let activeTab = 'diff';
+    let timelineFilter = 'all';
+    let diffViewMode = localStorage.getItem('chronos_diff_mode') || 'split'; // 'split' or 'unified'
+    let logRedact = true;
+    let logWrap = true;
+    let toastTimer = null;
+
+    function updateDiffModeButton() {
+      document.getElementById('diff-mode-label').textContent =
+        diffViewMode === 'split' ? 'Split (Side-by-Side)' : 'Unified';
+    }
+    updateDiffModeButton();
+
+    function showToast(msg, actionLabel = null, actionFn = null) {
+      const t = document.getElementById('toast');
+      document.getElementById('toast-msg').textContent = msg;
+      const actEl = document.getElementById('toast-action');
+      if (actionLabel && actionFn) {
+        actEl.innerHTML = '<button class="btn-sm btn-amber" id="toast-act-btn">' + escapeHtml(actionLabel) + '</button>';
+        document.getElementById('toast-act-btn').onclick = () => {
+          t.style.display = 'none';
+          actionFn();
+        };
+      } else {
+        actEl.innerHTML = '';
+      }
+      t.style.display = 'flex';
+      clearTimeout(toastTimer);
+      toastTimer = setTimeout(() => { t.style.display = 'none'; }, actionLabel ? 7000 : 3800);
+    }
+
+    function escapeHtml(str = '') {
+      return String(str)
+        .replace(/&/g, '&amp;')
+        .replace(/</g, '&lt;')
+        .replace(/>/g, '&gt;');
+    }
+
+    function redactTextClient(str = '') {
+      if (!logRedact) return str;
+      return String(str)
+        .replace(/\\beyJ[A-Za-z0-9_-]{10,}\\.[A-Za-z0-9_-]{10,}\\.[A-Za-z0-9_-]{10,}\\b/g, '<REDACTED_JWT>')
+        .replace(/(Bearer\\s+)[A-Za-z0-9._~+/=-]{8,}/gi, '$1<REDACTED_TOKEN>')
+        .replace(/((?:postgres|postgresql|mysql|mongodb(?:\\+srv)?|redis):\\/\\/[^:\\s/]+:)([^@\\s]+)(@)/gi, '$1<REDACTED_PASSWORD>$3');
+    }
+
+    // Live SSE connection
+    const evtSource = new EventSource('/api/events');
+    evtSource.onmessage = (e) => {
+      const msg = JSON.parse(e.data);
+      if (msg.type && msg.type !== 'connected') {
+        loadState(true);
+      }
+    };
+
+    async function loadState(selectLatest = false) {
+      const res = await fetch('/api/state');
+      appState = await res.json();
+
+      document.getElementById('workspace-path').textContent = appState.workspace;
+      document.getElementById('stat-cp').textContent = appState.stats.checkpointCount;
+      document.getElementById('stat-blobs').textContent = appState.stats.uniqueBlobs;
+      document.getElementById('stat-saved').textContent =
+        appState.stats.savedPercent + '% (' +
+        Math.round(appState.stats.physicalCompressedBytes / 1024 * 10) / 10 + ' KB)';
+
+      // Worktree Dirty Indicator
+      const dirtyPill = document.getElementById('dirty-pill');
+      if (appState.worktree && appState.worktree.isDirty) {
+        dirtyPill.style.display = 'inline-flex';
+        document.getElementById('dirty-text').textContent =
+          appState.worktree.changedFilesCount + ' unsaved file(s) (+' +
+          appState.worktree.addedLines + '/-' + appState.worktree.removedLines + ')';
+      } else {
+        dirtyPill.style.display = 'none';
+      }
+
+      document.getElementById('last-green-indicator').textContent =
+        appState.lastGreenId ? '🌟 ' + appState.lastGreenId : 'No green build';
+
+      populateCompareDropdowns();
+      renderSparkline();
+      renderTimeline();
+
+      if ((selectLatest || !selectedCpId) && appState.checkpoints.length > 0) {
+        selectCheckpoint(appState.checkpoints[0].id);
+      }
+    }
+
+    function populateCompareDropdowns() {
+      const selBase = document.getElementById('sel-base');
+      const selTarget = document.getElementById('sel-target');
+      const cpOptions = appState.checkpoints.map(cp => {
+        const icon = cp.status === 'pass' ? '✅' : cp.status === 'fail' ? '❌' : '📸';
+        return '<option value="' + cp.id + '">#' + cp.seq + ' ' + icon + ' ' + cp.id + ' (' + escapeHtml(cp.label.slice(0, 26)) + ')</option>';
+      }).join('');
+
+      selBase.innerHTML =
+        '<option value="--last-green">🌟 --last-green (Latest Passing)</option>' + cpOptions;
+      selTarget.innerHTML =
+        '<option value="WORKTREE">💻 Live Working Tree (On Disk)</option>' + cpOptions;
+    }
+
+    function renderSparkline() {
+      const container = document.getElementById('sparkline-bars');
+      const chronological = [...appState.checkpoints].reverse().slice(-30);
+      const maxDur = Math.max(50, ...chronological.map(c => c.durationMs || 20));
+      container.innerHTML = chronological.map(cp => {
+        const h = Math.max(22, Math.min(100, Math.round(((cp.durationMs || 25) / maxDur) * 100)));
+        const cls = cp.status === 'pass' ? 'spark-pass' : cp.status === 'fail' ? 'spark-fail' : 'spark-snap';
+        const active = cp.id === selectedCpId ? 'active' : '';
+        return '<div class="spark-bar ' + cls + ' ' + active + '" style="height:' + h + '%" title="#' + cp.seq + ' ' + cp.id + ' (' + cp.durationMs + 'ms)" onclick="selectCheckpoint(\\'' + cp.id + '\\')"></div>';
+      }).join('');
+    }
+
+    function setFilter(flt) {
+      timelineFilter = flt;
+      ['all', 'pass', 'fail', 'tag'].forEach(k => {
+        document.getElementById('flt-' + k).classList.toggle('active', k === flt);
+      });
+      renderTimeline();
+    }
+
+    function getFilteredCheckpoints() {
+      if (!appState) return [];
+      const q = (document.getElementById('timeline-search').value || '').trim().toLowerCase();
+      return appState.checkpoints.filter(cp => {
+        if (timelineFilter === 'pass' && cp.status !== 'pass') return false;
+        if (timelineFilter === 'fail' && cp.status !== 'fail') return false;
+        if (timelineFilter === 'tag' && (!cp.tags || cp.tags.length === 0)) return false;
+        if (!q) return true;
+        const hay = [
+          cp.id,
+          cp.label,
+          cp.command,
+          ...(cp.tags || []),
+          ...(cp.changedFiles || [])
+        ].filter(Boolean).join(' ').toLowerCase();
+        return hay.includes(q);
+      });
+    }
+
+    function renderTimeline() {
+      const list = getFilteredCheckpoints();
+      const container = document.getElementById('timeline-list');
+      if (list.length === 0) {
+        container.innerHTML = '<div style="padding:16px; color:var(--muted); font-family:var(--font-mono); font-size:12px;">No checkpoints match current filter.</div>';
+        return;
+      }
+
+      container.innerHTML = list.map(cp => {
+        const badgeClass = cp.status === 'pass' ? 'badge-pass' : cp.status === 'fail' ? 'badge-fail' : 'badge-snap';
+        const badgeText = cp.status === 'pass' ? '✅ PASS (0)' : cp.status === 'fail' ? '❌ FAIL (' + cp.exitCode + ')' : '📸 ' + cp.trigger.toUpperCase();
+        const isLastGreen = cp.id === appState.lastGreenId;
+        const timeStr = new Date(cp.timestamp).toLocaleTimeString();
+        const d = cp.diffSummary || { addedLines: 0, removedLines: 0, totalChangedFiles: 0 };
+        const tagsHtml = (cp.tags || []).map(t => '<span class="badge badge-tag">🏷 ' + escapeHtml(t) + '</span>').join('');
+
+        return \`
+          <div class="cp-card status-\${cp.status} \${cp.id === selectedCpId ? 'active' : ''}" id="card-\${cp.id}" onclick="selectCheckpoint('\${cp.id}')">
+            <div class="cp-top">
+              <span class="cp-id">#\${cp.seq} · \${cp.id} \${isLastGreen ? '🌟' : ''}\${tagsHtml}</span>
+              <span class="badge \${badgeClass}">\${badgeText}</span>
+            </div>
+            <div class="cp-cmd">\${escapeHtml(cp.label || cp.command || 'Snapshot')}</div>
+            <div class="cp-meta">
+              <span>\${timeStr} (\${cp.durationMs}ms)</span>
+              <span>
+                \${d.totalChangedFiles}f
+                <span class="diff-stat-add">+\${d.addedLines}</span> /
+                <span class="diff-stat-del">-\${d.removedLines}</span>
+              </span>
+            </div>
+          </div>
+        \`;
+      }).join('');
+    }
+
+    async function selectCheckpoint(id) {
+      selectedCpId = id;
+      renderSparkline();
+      renderTimeline();
+
+      const cardEl = document.getElementById('card-' + id);
+      if (cardEl) cardEl.scrollIntoView({ block: 'nearest', behavior: 'smooth' });
+
+      const res = await fetch('/api/checkpoint?id=' + encodeURIComponent(id));
+      currentCpData = await res.json();
+
+      // Sync dropdowns to reflect that we are viewing (seq-1) -> id
+      const cp = currentCpData.checkpoint;
+      const selTarget = document.getElementById('sel-target');
+      const selBase = document.getElementById('sel-base');
+      selTarget.value = cp.id;
+      if (cp.seq > 1) {
+        const prev = appState.checkpoints.find(c => c.seq === cp.seq - 1);
+        if (prev) selBase.value = prev.id;
+      }
+
+      renderCurrentCheckpointView();
+    }
+
+    function switchTab(tab) {
+      activeTab = tab;
+      document.getElementById('tab-diff').classList.toggle('active', tab === 'diff');
+      document.getElementById('tab-files').classList.toggle('active', tab === 'files');
+      if (currentCpData) renderCurrentCheckpointView();
+    }
+
+    function toggleDiffMode() {
+      diffViewMode = diffViewMode === 'split' ? 'unified' : 'split';
+      localStorage.setItem('chronos_diff_mode', diffViewMode);
+      updateDiffModeButton();
+      if (currentCpData) renderCurrentCheckpointView();
+    }
+
+    function renderIntraLineText(line) {
+      if (!line.intra) return escapeHtml(line.text);
+      const cls = line.type === 'add' ? 'intra-add' : 'intra-del';
+      return (
+        escapeHtml(line.intra.prefix) +
+        (line.intra.mid ? '<mark class="' + cls + '">' + escapeHtml(line.intra.mid) + '</mark>' : '') +
+        escapeHtml(line.intra.suffix)
+      );
+    }
+
+    function buildSplitRowsHtml(hunkLines) {
+      const rows = [];
+      let idx = 0;
+      while (idx < hunkLines.length) {
+        const cur = hunkLines[idx];
+        if (cur.type === 'equal') {
+          rows.push(\`
+            <tr class="diff-row-eq">
+              <td class="diff-ln">\${cur.oldLine || ''}</td>
+              <td>  \${escapeHtml(cur.text)}</td>
+              <td class="diff-ln">\${cur.newLine || ''}</td>
+              <td>  \${escapeHtml(cur.text)}</td>
+            </tr>
+          \`);
+          idx++;
+        } else {
+          const dels = [];
+          while (idx < hunkLines.length && hunkLines[idx].type === 'del') {
+            dels.push(hunkLines[idx++]);
+          }
+          const adds = [];
+          while (idx < hunkLines.length && hunkLines[idx].type === 'add') {
+            adds.push(hunkLines[idx++]);
+          }
+          const maxLen = Math.max(dels.length, adds.length);
+          for (let k = 0; k < maxLen; k++) {
+            const d = dels[k];
+            const a = adds[k];
+            rows.push(\`
+              <tr>
+                <td class="diff-ln \${d ? 'diff-row-del' : 'diff-empty-cell'}">\${d ? d.oldLine : ''}</td>
+                <td class="\${d ? 'diff-row-del' : 'diff-empty-cell'}">\${d ? '- ' + renderIntraLineText(d) : ''}</td>
+                <td class="diff-ln \${a ? 'diff-row-add' : 'diff-empty-cell'}">\${a ? a.newLine : ''}</td>
+                <td class="\${a ? 'diff-row-add' : 'diff-empty-cell'}">\${a ? '+ ' + renderIntraLineText(a) : ''}</td>
+              </tr>
+            \`);
+          }
+        }
+      }
+      return rows.join('');
+    }
+
+    function renderDiffFiles(files, sourceRef = '--last-green') {
+      if (!files || files.length === 0) {
+        return '<div class="panel" style="padding: 16px; color: var(--muted); font-family: var(--font-mono); font-size: 12px;">✨ No file changes between these two states.</div>';
+      }
+
+      const jumpPills = files.map((f, i) => \`
+        <span class="file-pill" onclick="document.getElementById('diff-file-\${i}').scrollIntoView({behavior:'smooth'})">
+          📄 \${escapeHtml(f.path)}
+          <span class="diff-stat-add">+\${f.added}</span>/<span class="diff-stat-del">-\${f.removed}</span>
+        </span>
+      \`).join('');
+
+      const filesCards = files.map((file, fIdx) => {
+        const hunksHtml = file.hunks.map((hunk, hIdx) => {
+          if (diffViewMode === 'split') {
+            const sep = hIdx > 0 ? '<tr><td colspan="4" class="diff-hunk-sep">⋯</td></tr>' : '';
+            return sep + buildSplitRowsHtml(hunk.lines);
+          } else {
+            const rows = hunk.lines.map(line => {
+              const rowClass = line.type === 'add' ? 'diff-row-add' : line.type === 'del' ? 'diff-row-del' : 'diff-row-eq';
+              const prefix = line.type === 'add' ? '+' : line.type === 'del' ? '-' : ' ';
+              return \`
+                <tr class="\${rowClass}">
+                  <td class="diff-ln">\${line.oldLine || ''}</td>
+                  <td class="diff-ln">\${line.newLine || ''}</td>
+                  <td>\${prefix} \${renderIntraLineText(line)}</td>
+                </tr>
+              \`;
+            }).join('');
+            return (hIdx > 0 ? '<tr><td colspan="3" class="diff-hunk-sep">⋯</td></tr>' : '') + rows;
+          }
+        }).join('');
+
+        return \`
+          <div class="diff-file" id="diff-file-\${fIdx}">
+            <div class="diff-file-header" onclick="this.parentElement.classList.toggle('collapsed')">
+              <span>▾ 📄 \${escapeHtml(file.path)} <span style="color: var(--muted); font-weight: normal;">(\${file.status})</span></span>
+              <span style="display:flex; align-items:center; gap:8px;" onclick="event.stopPropagation()">
+                <span>
+                  <span class="diff-stat-add">+\${file.added}</span> /
+                  <span class="diff-stat-del">-\${file.removed}</span>
+                </span>
+                <button class="btn-sm" onclick="openFileHistoryModal('\${escapeHtml(file.path)}')">📜 History</button>
+                <button class="btn-sm btn-cyan" onclick="pickSingleFile('\${sourceRef}', '\${escapeHtml(file.path)}')">⏪ Restore File</button>
+              </span>
+            </div>
+            <div class="diff-file-body">
+              <table class="diff-table">
+                <tbody>\${hunksHtml}</tbody>
+              </table>
+            </div>
+          </div>
+        \`;
+      }).join('');
+
+      return \`
+        <div class="file-jump-bar">
+          <div class="file-pills">\${jumpPills}</div>
+          <div style="display:flex; gap:6px;">
+            <button class="btn-sm" onclick="document.querySelectorAll('.diff-file').forEach(el=>el.classList.add('collapsed'))">Collapse All</button>
+            <button class="btn-sm" onclick="document.querySelectorAll('.diff-file').forEach(el=>el.classList.remove('collapsed'))">Expand All</button>
+          </div>
+        </div>
+        \${filesCards}
+      \`;
+    }
+
+    function renderCurrentCheckpointView() {
+      const cp = currentCpData.checkpoint;
+      const badgeClass = cp.status === 'pass' ? 'badge-pass' : cp.status === 'fail' ? 'badge-fail' : 'badge-snap';
+      const badgeText = cp.status === 'pass' ? '✅ EXIT 0 (PASS)' : cp.status === 'fail' ? '❌ EXIT ' + cp.exitCode + ' (FAIL)' : '📸 SNAPSHOT';
+      const tagsHtml = (cp.tags || []).map(t => '<span class="badge badge-tag">🏷 ' + escapeHtml(t) + '</span>').join('');
+
+      document.getElementById('detail-title').innerHTML = \`
+        <span>#\${cp.seq} · \${cp.id}</span>
+        <span class="badge \${badgeClass}">\${badgeText}</span>
+        \${tagsHtml}
+        <span style="color: var(--muted); font-size: 12px;">\${escapeHtml(cp.label)}</span>
+      \`;
+
+      document.getElementById('detail-actions').innerHTML = \`
+        <button class="btn-sm" onclick="openTagModal('\${cp.id}')">🏷 Add Tag</button>
+        <button class="btn-sm btn-amber" onclick="rewindTo('\${cp.id}')">⏪ Rewind All to #\${cp.seq}</button>
+      \`;
+
+      if (activeTab === 'files') {
+        const filesHtml = Object.entries(currentCpData.fileContents).map(([relPath, content]) => \`
+          <div class="diff-file">
+            <div class="diff-file-header" onclick="this.parentElement.classList.toggle('collapsed')">
+              <span>▾ 📄 \${escapeHtml(relPath)}</span>
+              <span style="display:flex; gap:6px;" onclick="event.stopPropagation()">
+                <button class="btn-sm" onclick="openFileHistoryModal('\${escapeHtml(relPath)}')">📜 History</button>
+                <button class="btn-sm btn-cyan" onclick="pickSingleFile('\${cp.id}', '\${escapeHtml(relPath)}')">⏪ Restore This Version</button>
+              </span>
+            </div>
+            <div class="diff-file-body">
+              <pre class="terminal-output" style="max-height:320px;">\${escapeHtml(content)}</pre>
+            </div>
+          </div>
+        \`).join('');
+        document.getElementById('detail-body').innerHTML = filesHtml;
+        return;
+      }
+
+      const rawStdout = redactTextClient(cp.cleanStdout || '(no stdout output)');
+      const rawStderr = redactTextClient(cp.cleanStderr || '');
+      const envInfo = cp.env
+        ? \`Node \${cp.env.nodeVersion} · \${cp.env.platform}\${cp.env.gitBranch ? ' · branch: ' + cp.env.gitBranch : ''}\`
+        : '';
+
+      document.getElementById('detail-body').innerHTML = \`
+        <div class="panel">
+          <div class="panel-title">
+            <span>🖥 TERMINAL FLIGHT RECORD (\${cp.command ? escapeHtml(cp.command) : 'Snapshot'})</span>
+            <span style="display:flex; align-items:center; gap:8px;">
+              <span style="color: var(--muted);">\${envInfo} | \${cp.durationMs}ms</span>
+              <button class="btn-sm" onclick="logRedact=!logRedact; renderCurrentCheckpointView()">
+                \${logRedact ? '🔒 Redact: ON' : '🔓 Redact: OFF'}
+              </button>
+              <button class="btn-sm" onclick="logWrap=!logWrap; renderCurrentCheckpointView()">
+                \${logWrap ? '↩ Wrap: ON' : '➡ Wrap: OFF'}
+              </button>
+              <button class="btn-sm" onclick="navigator.clipboard.writeText(currentCpData.checkpoint.cleanStdout + '\\n' + currentCpData.checkpoint.cleanStderr); showToast('📋 Terminal log copied!')">
+                📋 Copy Log
+              </button>
+            </span>
+          </div>
+          <div class="terminal-output \${logWrap ? '' : 'nowrap'}">
+\${escapeHtml(rawStdout)}
+\${rawStderr ? '<div class="terminal-stderr">' + escapeHtml(rawStderr) + '</div>' : ''}
+          </div>
+        </div>
+
+        \${renderDiffFiles(currentCpData.diffVsPrev.files, cp.id)}
+      \`;
+    }
+
+    async function onCustomCompareChange() {
+      const base = document.getElementById('sel-base').value;
+      const target = document.getElementById('sel-target').value;
+      await runCustomCompare(base, target);
+    }
+
+    async function runCustomCompare(base, target) {
+      const res = await fetch('/api/diff?base=' + encodeURIComponent(base) + '&target=' + encodeURIComponent(target));
+      const data = await res.json();
+      if (data.error) return showToast('⚠️ ' + data.error);
+
+      document.getElementById('sel-base').value = base === '--last-green' ? '--last-green' : data.baseCheckpoint.id;
+      document.getElementById('sel-target').value = target === 'WORKTREE' ? 'WORKTREE' : (data.compareCheckpoint ? data.compareCheckpoint.id : 'WORKTREE');
+
+      document.getElementById('detail-title').innerHTML = \`
+        <span style="color:var(--cyan);">⚡ COMPARE MODE:</span>
+        <span>\${data.baseCheckpoint.id} (#\${data.baseCheckpoint.seq})</span>
+        <span>➔</span>
+        <span style="color:var(--amber);">\${escapeHtml(data.compareLabel)}</span>
+      \`;
+
+      document.getElementById('detail-actions').innerHTML = \`
+        <button class="btn-sm btn-amber" onclick="rewindTo('\${data.baseCheckpoint.id}')">⏪ Rewind Workspace to \${data.baseCheckpoint.id}</button>
+      \`;
+
+      const driftHtml = data.envDrift && data.envDrift.length > 0
+        ? '<div class="panel" style="padding:11px 14px; border-color:var(--amber); color:#fbbf24; font-family:var(--font-mono); font-size:12px;">⚠️ ENVIRONMENT DRIFT DETECTED: ' + escapeHtml(data.envDrift.join(' | ')) + '</div>'
+        : '';
+
+      document.getElementById('detail-body').innerHTML = \`
+        \${driftHtml}
+        <div class="panel" style="padding: 12px 14px; font-family: var(--font-mono); font-size: 12px;">
+          Delta Summary: <strong>\${data.summary.totalChangedFiles} file(s) modified</strong>
+          (<span class="diff-stat-add">+\${data.summary.addedLines} additions</span> /
+           <span class="diff-stat-del">-\${data.summary.removedLines} deletions</span>).
+          Click <strong>"⏪ Restore File"</strong> on any file below to restore it from <strong>\${data.baseCheckpoint.id}</strong>!
+        </div>
+        \${renderDiffFiles(data.files, data.baseCheckpoint.id)}
+      \`;
+    }
+
+    function compareLastGreen() {
+      runCustomCompare('--last-green', 'WORKTREE');
+    }
+
+    // Custom Modals (Zero window.prompt!)
+    function openModal(title, bodyHtml) {
+      document.getElementById('modal-title').textContent = title;
+      document.getElementById('modal-body').innerHTML = bodyHtml;
+      document.getElementById('modal-backdrop').classList.add('open');
+    }
+
+    function closeModal() {
+      document.getElementById('modal-backdrop').classList.remove('open');
+    }
+
+    function openTagModal(targetId) {
+      openModal('🏷 Tag / Bookmark Checkpoint ' + targetId, \`
+        <div style="display:flex; flex-direction:column; gap:12px;">
+          <p style="font-size:12.5px; color:var(--muted);">
+            Give this checkpoint a memorable name (e.g. <code>v1-stable</code>, <code>before-refactor</code>). Tagged checkpoints are protected from Garbage Collection.
+          </p>
+          <input type="text" id="modal-tag-input" class="runner-input" placeholder="e.g. v1-stable" onkeydown="if(event.key==='Enter') submitTagModal('\${targetId}')" />
+          <div style="display:flex; justify-content:flex-end; gap:8px;">
+            <button onclick="closeModal()">Cancel</button>
+            <button class="btn-cyan" onclick="submitTagModal('\${targetId}')">🏷 Save Tag</button>
+          </div>
+        </div>
+      \`);
+      setTimeout(() => document.getElementById('modal-tag-input')?.focus(), 50);
+    }
+
+    async function submitTagModal(targetId) {
+      const tag = document.getElementById('modal-tag-input').value.trim();
+      if (!tag) return;
+      closeModal();
+      const res = await fetch('/api/tag', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ target: targetId, tag })
+      });
+      const data = await res.json();
+      if (data.error) return showToast('⚠️ ' + data.error);
+      showToast('🏷 Tagged ' + targetId + ' as "' + data.tag + '"');
+      await loadState(false);
+    }
+
+    function openBisectModal() {
+      const defaultCmd = document.getElementById('cmd-input').value.trim() || 'node test.js';
+      openModal('🕵️‍♂️ Automated Binary-Search Bug Detective (Bisect)', \`
+        <div style="display:flex; flex-direction:column; gap:12px;">
+          <p style="font-size:12.5px; color:var(--muted);">
+            Chronos will automatically binary-search (<code>O(log N)</code>) across your checkpoints, run the test command at each midpoint, and pinpoint the exact first checkpoint that broke the build!
+          </p>
+          <label style="font-size:11.5px; font-family:var(--font-mono); color:var(--muted);">TEST COMMAND TO VERIFY:</label>
+          <input type="text" id="modal-bisect-cmd" class="runner-input" value="\${escapeHtml(defaultCmd)}" onkeydown="if(event.key==='Enter') executeBisect()" />
+          <div style="display:flex; justify-content:flex-end; gap:8px;">
+            <button onclick="closeModal()">Cancel</button>
+            <button class="btn-purple" onclick="executeBisect()">🕵️‍♂️ Start Binary Search</button>
+          </div>
+        </div>
+      \`);
+      setTimeout(() => document.getElementById('modal-bisect-cmd')?.focus(), 50);
+    }
+
+    async function executeBisect() {
+      const command = document.getElementById('modal-bisect-cmd').value.trim() || 'node test.js';
+      closeModal();
+      showToast('🕵️‍♂️ Running binary-search bisect with: ' + command + '...');
+      const res = await fetch('/api/bisect', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ command, goodRef: '1', badRef: 'latest' })
+      });
+      const data = await res.json();
+      if (data.error) return showToast('⚠️ ' + data.error);
+
+      const c = data.culpritCheckpoint;
+      const stepsRows = data.steps.map((s, i) => \`
+        <tr style="border-bottom:1px solid var(--border);">
+          <td style="padding:6px 10px;">Step \${i + 1}</td>
+          <td style="padding:6px 10px;">#\${s.seq} (\${s.id})</td>
+          <td style="padding:6px 10px;">\${s.passed ? '✅ PASS (0)' : '❌ FAIL (' + s.exitCode + ')'}</td>
+          <td style="padding:6px 10px;">\${s.durationMs}ms</td>
+        </tr>
+      \`).join('');
+
+      document.getElementById('detail-title').innerHTML = \`
+        <span style="color:var(--purple);">🕵️‍♂️ BISECT CULPRIT IDENTIFIED:</span>
+        <span>#\${c.seq} (\${c.id})</span>
+      \`;
+      document.getElementById('detail-body').innerHTML = \`
+        <div class="panel" style="padding: 14px; font-family: var(--font-mono); font-size: 12px; border-color: var(--purple);">
+          🎯 <strong>First Bad Checkpoint Pinpointed in \${data.steps.length} step(s):</strong>
+          <span style="color:var(--cyan);">\${c.id}</span> — \${escapeHtml(c.label)}
+          <table style="width:100%; margin-top:10px; border-collapse:collapse;">
+            <tbody>\${stepsRows}</tbody>
+          </table>
+        </div>
+        \${data.culpritDiff ? renderDiffFiles(data.culpritDiff.files, String(c.seq - 1)) : ''}
+      \`;
+      showToast('🎯 Culprit identified: ' + c.id);
+    }
+
+    async function openFileHistoryModal(filePath) {
+      const res = await fetch('/api/file-history?path=' + encodeURIComponent(filePath));
+      const data = await res.json();
+      if (data.error) return showToast('⚠️ ' + data.error);
+
+      const rows = data.history.map(h => \`
+        <div class="palette-item" style="border-bottom:1px solid var(--border);" onclick="closeModal(); selectCheckpoint('\${h.id}')">
+          <div>
+            <strong>#\${h.seq} · \${h.id}</strong>
+            <span class="badge \${h.status==='pass'?'badge-pass':h.status==='fail'?'badge-fail':'badge-snap'}">\${h.changeType.toUpperCase()}</span>
+            <div style="font-size:11px; color:var(--muted); font-family:var(--font-mono);">\${escapeHtml(h.label)}</div>
+          </div>
+          <button class="btn-sm btn-cyan" onclick="event.stopPropagation(); closeModal(); pickSingleFile('\${h.id}', '\${escapeHtml(filePath)}')">⏪ Restore</button>
+        </div>
+      \`).join('');
+
+      openModal('📜 File Evolution Timeline: ' + filePath, \`
+        <div style="display:flex; flex-direction:column; gap:6px;">
+          \${rows || '<div style="color:var(--muted);">No history found.</div>'}
+        </div>
+      \`);
+    }
+
+    async function runDoctor() {
+      const res = await fetch('/api/doctor');
+      const d = await res.json();
+      openModal('🩺 Chronos Storage & Cryptographic Integrity Doctor', \`
+        <div style="font-family:var(--font-mono); font-size:12.5px; display:flex; flex-direction:column; gap:10px;">
+          <div class="stat-pill" style="justify-content:space-between;">
+            <span>CAS SHA-256 Blob Integrity:</span>
+            <strong style="color:\${d.healthy ? 'var(--green)' : 'var(--red)'};">
+              \${d.healthy ? '✅ 100% HEALTHY (' + d.verifiedBlobs + ' blobs verified, 0 corrupted)' : '❌ ISSUES FOUND'}
+            </strong>
+          </div>
+          <div class="stat-pill" style="justify-content:space-between;">
+            <span>Git Stealth Exclusion (.git/info/exclude):</span>
+            <strong>\${d.gitStealthActive ? '✅ Active (Invisible to git status)' : '⚠️ Inactive'}</strong>
+          </div>
+          <div class="stat-pill" style="justify-content:space-between;">
+            <span>Deduplication Compression Efficiency:</span>
+            <strong>\${d.stats.savedPercent}% saved (\${(d.stats.physicalCompressedBytes/1024).toFixed(1)} KB physical vs \${(d.stats.logicalBytes/1024).toFixed(1)} KB logical)</strong>
+          </div>
+          <div class="stat-pill" style="justify-content:space-between;">
+            <span>Live Worktree Status:</span>
+            <strong>\${d.worktree.isDirty ? '⚠️ ' + d.worktree.changedFilesCount + ' unsaved file(s)' : '✨ Clean (Matches latest checkpoint)'}</strong>
+          </div>
+        </div>
+      \`);
+    }
+
+    function openCommandPalette() {
+      const actions = [
+        { label: '⚡ Diff Live Workspace vs --last-green', kbd: 'G', fn: () => compareLastGreen() },
+        { label: '🔀 Toggle Split (Side-by-Side) / Unified Diff View', kbd: 'S', fn: () => toggleDiffMode() },
+        { label: '🕵️‍♂️ Run Automated Binary-Search Bisect', kbd: 'B', fn: () => openBisectModal() },
+        { label: '📋 Copy Secret-Redacted Markdown Bug Report', kbd: 'E', fn: () => copyReport() },
+        { label: '⏪ Rewind Entire Workspace to --last-green', kbd: '', fn: () => rewindLastGreen() },
+        { label: '📸 Take Instant Manual Snapshot', kbd: '', fn: () => manualSnap() },
+        { label: '🩺 Run Cryptographic CAS Storage Doctor', kbd: '', fn: () => runDoctor() }
+      ];
+
+      const html = actions.map((a, i) => \`
+        <div class="palette-item" id="pal-\${i}">
+          <span>\${a.label}</span>
+          \${a.kbd ? '<kbd>' + a.kbd + '</kbd>' : ''}
+        </div>
+      \`).join('');
+
+      openModal('⌘ Command Palette & Keyboard Shortcuts', \`
+        <div style="display:flex; flex-direction:column; gap:4px;">\${html}</div>
+      \`);
+
+      actions.forEach((a, i) => {
+        document.getElementById('pal-' + i).onclick = () => {
+          closeModal();
+          a.fn();
+        };
+      });
+    }
+
+    async function copyReport() {
+      const id = selectedCpId || 'latest';
+      const res = await fetch('/api/export?id=' + encodeURIComponent(id));
+      const data = await res.json();
+      if (data.markdown) {
+        await navigator.clipboard.writeText(data.markdown);
+        showToast('📋 Secret-redacted Markdown Bug Report copied to clipboard!');
+      }
+    }
+
+    async function pickSingleFile(targetRef, filePath) {
+      const prevCpId = appState.checkpoints[0]?.id;
+      const res = await fetch('/api/pick', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ target: targetRef, files: [filePath] })
+      });
+      const data = await res.json();
+      if (data.error) return showToast('⚠️ ' + data.error);
+      await loadState(true);
+      showToast(
+        '✨ Restored ' + filePath + ' from ' + data.targetCheckpoint.id,
+        prevCpId ? '↩ Undo' : null,
+        prevCpId ? () => pickSingleFile(prevCpId, filePath) : null
+      );
+    }
+
+    async function rewindTo(target) {
+      const prevLatestId = appState.checkpoints[0]?.id;
+      const res = await fetch('/api/rewind', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ target })
+      });
+      const data = await res.json();
+      if (data.error) return showToast('⚠️ ' + data.error);
+      const undoTargetId = data.safetySnapshot ? data.safetySnapshot.id : prevLatestId;
+      await loadState(true);
+      showToast(
+        '⏪ Rewound ' + data.restoredCount + ' files to ' + data.targetCheckpoint.id,
+        undoTargetId ? '↩ Undo Rewind' : null,
+        undoTargetId ? () => rewindTo(undoTargetId) : null
+      );
+    }
+
+    function rewindLastGreen() { rewindTo('--last-green'); }
+
+    async function runCommand() {
+      const input = document.getElementById('cmd-input');
+      const btn = document.getElementById('btn-run');
+      const icon = document.getElementById('run-icon');
+      const label = document.getElementById('run-label');
+      const command = input.value.trim();
+      if (!command || btn.disabled) return;
+
+      btn.disabled = true;
+      icon.innerHTML = '<span class="spinner"></span>';
+      label.textContent = 'Running...';
+
+      try {
+        const res = await fetch('/api/run', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ command })
+        });
+        const data = await res.json();
+        await loadState(true);
+        showToast(
+          (data.checkpoint.exitCode === 0 ? '✅ ' : '❌ ') +
+          'Recorded ' + data.checkpoint.id + ' (exit ' + data.checkpoint.exitCode + ' in ' + data.checkpoint.durationMs + 'ms)'
+        );
+      } finally {
+        btn.disabled = false;
+        icon.textContent = '▶';
+        label.textContent = 'Run & Snapshot';
+      }
+    }
+
+    async function manualSnap() {
+      const res = await fetch('/api/snap', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ label: 'Manual Studio Snapshot' })
+      });
+      const data = await res.json();
+      await loadState(true);
+      showToast('📸 Created snapshot ' + data.checkpoint.id);
+    }
+
+    // Global Keyboard-First Listener
+    window.addEventListener('keydown', (e) => {
+      if ((e.ctrlKey || e.metaKey) && e.key.toLowerCase() === 'k') {
+        e.preventDefault();
+        openCommandPalette();
+        return;
+      }
+      if (e.key === 'Escape') {
+        closeModal();
+        return;
+      }
+      const tag = document.activeElement?.tagName;
+      if (tag === 'INPUT' || tag === 'TEXTAREA' || tag === 'SELECT') return;
+
+      if (e.key === '/') {
+        e.preventDefault();
+        document.getElementById('cmd-input').focus();
+      } else if (e.key === 'ArrowDown' || e.key.toLowerCase() === 'j') {
+        e.preventDefault();
+        const list = getFilteredCheckpoints();
+        const idx = list.findIndex(c => c.id === selectedCpId);
+        if (idx !== -1 && idx + 1 < list.length) selectCheckpoint(list[idx + 1].id);
+      } else if (e.key === 'ArrowUp' || e.key.toLowerCase() === 'k') {
+        e.preventDefault();
+        const list = getFilteredCheckpoints();
+        const idx = list.findIndex(c => c.id === selectedCpId);
+        if (idx > 0) selectCheckpoint(list[idx - 1].id);
+      } else if (e.key.toLowerCase() === 'g') {
+        e.preventDefault();
+        compareLastGreen();
+      } else if (e.key.toLowerCase() === 's') {
+        e.preventDefault();
+        toggleDiffMode();
+      } else if (e.key.toLowerCase() === 'b') {
+        e.preventDefault();
+        openBisectModal();
+      } else if (e.key.toLowerCase() === 'e') {
+        e.preventDefault();
+        copyReport();
+      } else if (e.key === '?') {
+        e.preventDefault();
+        openCommandPalette();
+      }
+    });
+
+    loadState(true);
+  </script>
+</body>
+</html>
