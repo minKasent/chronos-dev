@@ -11,6 +11,35 @@ function isBinaryBuffer(buffer) {
 }
 
 /**
+ * Strip ANSI escape sequences from terminal output when needed
+ */
+function stripAnsi(str = '') {
+  return String(str).replace(
+    // eslint-disable-next-line no-control-regex
+    /[\u001b\u009b][[()#;?]*(?:[0-9]{1,4}(?:;[0-9]{0,4})*)?[0-9A-ORZcf-nqry=><]/g,
+    ''
+  );
+}
+
+/**
+ * Automatically redact sensitive tokens, passwords, JWTs, and connection credentials
+ */
+function redactSecrets(text = '') {
+  if (!text) return '';
+  return String(text)
+    // JWT tokens
+    .replace(/\beyJ[A-Za-z0-9_-]{10,}\.[A-Za-z0-9_-]{10,}\.[A-Za-z0-9_-]{10,}\b/g, '<REDACTED_JWT>')
+    // Bearer tokens
+    .replace(/(Bearer\s+)[A-Za-z0-9._~+/=-]{8,}/gi, '$1<REDACTED_TOKEN>')
+    // Database connection URLs (postgres://user:pass@host, mongodb://..., redis://...)
+    .replace(/((?:postgres|postgresql|mysql|mongodb(?:\+srv)?|redis):\/\/[^:\s/]+:)([^@\s]+)(@)/gi, '$1<REDACTED_PASSWORD>$3')
+    // Common API key patterns (sk-..., ghp_..., gho_..., AIza..., AKIA...)
+    .replace(/\b(sk-[A-Za-z0-9]{16,}|gh[pousr]_[A-Za-z0-9]{16,}|AIza[0-9A-Za-z_-]{30,}|AKIA[0-9A-Z]{16})\b/g, '<REDACTED_API_KEY>')
+    // Generic key=value secrets
+    .replace(/((?:password|passwd|secret|api_key|apikey|access_token|private_key)\s*[:=]\s*['"]?)([^\s'",;]+)(['"]?)/gi, '$1<REDACTED>$3');
+}
+
+/**
  * Compute line-by-line diff using Longest Common Subsequence (LCS)
  * Returns structured diff lines and statistics (+added / -removed)
  */
@@ -117,6 +146,8 @@ function buildContextualHunks(ops, contextRadius = 3) {
 
 module.exports = {
   isBinaryBuffer,
+  stripAnsi,
+  redactSecrets,
   computeLineDiff,
   buildContextualHunks
 };

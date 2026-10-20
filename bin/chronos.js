@@ -33,13 +33,17 @@ function printBanner() {
 }
 
 function formatStatusBadge(cp, isLastGreen = false) {
+  const tagsStr =
+    Array.isArray(cp.tags) && cp.tags.length > 0
+      ? ` ${cp.tags.map((t) => `${c.yellow}[🏷 ${t}]${c.reset}`).join(' ')}`
+      : '';
   if (cp.status === 'pass') {
-    return `${c.green}${c.bold}✅ PASS (0)${c.reset}${isLastGreen ? ` ${c.yellow}🌟 [LAST-GREEN]${c.reset}` : ''}`;
+    return `${c.green}${c.bold}✅ PASS (0)${c.reset}${isLastGreen ? ` ${c.yellow}🌟 [LAST-GREEN]${c.reset}` : ''}${tagsStr}`;
   }
   if (cp.status === 'fail') {
-    return `${c.red}${c.bold}❌ FAIL (${cp.exitCode})${c.reset}`;
+    return `${c.red}${c.bold}❌ FAIL (${cp.exitCode})${c.reset}${tagsStr}`;
   }
-  return `${c.magenta}${c.bold}📸 ${cp.trigger.toUpperCase()}${c.reset}`;
+  return `${c.magenta}${c.bold}📸 ${cp.trigger.toUpperCase()}${c.reset}${tagsStr}`;
 }
 
 function printTimeline(engine) {
@@ -80,25 +84,8 @@ function printTimeline(engine) {
   }
 }
 
-function printDiff(engine, baseRef = '--last-green', targetRef = 'WORKTREE') {
-  const diff = engine.compareWith(baseRef, targetRef);
-  const baseCp = diff.baseCheckpoint;
-
-  printBanner();
-  console.log(
-    `${c.bold}🔍 TIME-MACHINE DIFF ANALYSIS${c.reset}\n` +
-      `   ${c.gray}Base Checkpoint:${c.reset} ${c.cyan}${c.bold}${baseCp.id}${c.reset} — ${baseCp.label} (${formatStatusBadge(baseCp)})\n` +
-      `   ${c.gray}Compared With:${c.reset}   ${c.yellow}${c.bold}${diff.compareLabel}${c.reset}\n` +
-      `   ${c.gray}Summary:${c.reset}         ${c.bold}${diff.summary.totalChangedFiles} file(s) modified${c.reset} ` +
-      `(${c.green}+${diff.summary.addedLines} additions${c.reset}, ${c.red}-${diff.summary.removedLines} deletions${c.reset})\n`
-  );
-
-  if (diff.files.length === 0) {
-    console.log(`${c.green}✨ Working directory is identical to ${baseCp.id}!${c.reset}`);
-    return;
-  }
-
-  for (const file of diff.files) {
+function printDiffFilesList(files) {
+  for (const file of files) {
     console.log(
       `${c.cyan}━━━ 📄 ${c.bold}${file.path}${c.reset} ${c.gray}(${file.status})${c.reset} ${c.green}+${file.added}${c.reset}/${c.red}-${file.removed}${c.reset} ━━━`
     );
@@ -120,6 +107,33 @@ function printDiff(engine, baseRef = '--last-green', targetRef = 'WORKTREE') {
   }
 }
 
+function printDiff(engine, baseRef = '--last-green', targetRef = 'WORKTREE') {
+  const diff = engine.compareWith(baseRef, targetRef);
+  const baseCp = diff.baseCheckpoint;
+
+  printBanner();
+  console.log(
+    `${c.bold}🔍 TIME-MACHINE DIFF ANALYSIS${c.reset}\n` +
+      `   ${c.gray}Base Checkpoint:${c.reset} ${c.cyan}${c.bold}${baseCp.id}${c.reset} — ${baseCp.label} (${formatStatusBadge(baseCp)})\n` +
+      `   ${c.gray}Compared With:${c.reset}   ${c.yellow}${c.bold}${diff.compareLabel}${c.reset}\n` +
+      `   ${c.gray}Summary:${c.reset}         ${c.bold}${diff.summary.totalChangedFiles} file(s) modified${c.reset} ` +
+      `(${c.green}+${diff.summary.addedLines} additions${c.reset}, ${c.red}-${diff.summary.removedLines} deletions${c.reset})\n`
+  );
+
+  if (diff.envDrift && diff.envDrift.length > 0) {
+    console.log(
+      `   ${c.yellow}${c.bold}⚠️  ENVIRONMENT DRIFT DETECTED:${c.reset} ${diff.envDrift.join(' | ')}\n`
+    );
+  }
+
+  if (diff.files.length === 0) {
+    console.log(`${c.green}✨ Working directory is identical to ${baseCp.id}!${c.reset}`);
+    return;
+  }
+
+  printDiffFilesList(diff.files);
+}
+
 function getShellHookSnippet(shell = 'powershell') {
   const s = shell.toLowerCase();
   if (s === 'powershell' || s === 'pwsh') {
@@ -138,7 +152,12 @@ alias cht='chronos timeline'`;
 
 function openBrowser(url) {
   const plat = process.platform;
-  const cmd = plat === 'win32' ? `start "" "${url}"` : plat === 'darwin' ? `open "${url}"` : `xdg-open "${url}"`;
+  const cmd =
+    plat === 'win32'
+      ? `start "" "${url}"`
+      : plat === 'darwin'
+      ? `open "${url}"`
+      : `xdg-open "${url}"`;
   spawn(cmd, { shell: true, detached: true, stdio: 'ignore' }).unref();
 }
 
@@ -192,7 +211,7 @@ async function main() {
     );
     if (cp.exitCode !== 0) {
       console.log(
-        `${c.cyan}│${c.reset} 💡 Quick Fix: ${c.yellow}${c.bold}ch d${c.reset} (diff vs last green) or ${c.yellow}${c.bold}ch back${c.reset} (rewind)`
+        `${c.cyan}│${c.reset} 💡 Quick Fix: ${c.yellow}${c.bold}ch d${c.reset} (diff), ${c.yellow}${c.bold}ch pick --last-green <file>${c.reset}, or ${c.yellow}${c.bold}ch back${c.reset}`
       );
     }
     console.log(
@@ -206,6 +225,20 @@ async function main() {
     const cp = engine.createCheckpoint({ trigger: 'manual', label });
     console.log(
       `${c.green}📸 Created Checkpoint ${c.bold}${cp.id}${c.reset}: "${label}" (${cp.fileCount} files tracked)`
+    );
+    return;
+  }
+
+  if (cmd === 'tag') {
+    const ref = args[1];
+    const tagName = args[2];
+    if (!ref || !tagName) {
+      console.error(`${c.red}Usage: ch tag <checkpoint-ref> <tag-name> (e.g. ch tag --last-green v1-stable)${c.reset}`);
+      process.exit(1);
+    }
+    const res = engine.tagCheckpoint(ref, tagName);
+    console.log(
+      `${c.green}🏷  Tagged checkpoint ${c.cyan}${c.bold}${res.checkpoint.id}${c.reset} as ${c.yellow}${c.bold}"${res.tag}"${c.reset}`
     );
     return;
   }
@@ -244,6 +277,69 @@ async function main() {
     const baseRef = args[1] || '--last-green';
     const targetRef = args[2] || 'WORKTREE';
     printDiff(engine, baseRef, targetRef);
+    return;
+  }
+
+  if (cmd === 'pick' || cmd === 'checkout' || cmd === 'co') {
+    const targetRef = args[1] || '--last-green';
+    const files = args.slice(2);
+    if (files.length === 0) {
+      console.error(
+        `${c.red}Usage: ch pick <checkpoint-ref> <file1> [file2...] (e.g. ch pick --last-green src/pricing.js)${c.reset}`
+      );
+      process.exit(1);
+    }
+    const res = engine.checkoutFiles(targetRef, files);
+    printBanner();
+    console.log(
+      `${c.green}${c.bold}✨ SURGICAL FILE RESTORE COMPLETE!${c.reset}\n` +
+        `   Source Checkpoint: ${c.cyan}${c.bold}${res.targetCheckpoint.id}${c.reset} (${res.targetCheckpoint.label})\n` +
+        `   Restored File(s):  ${c.bold}${res.restoredFiles.join(', ') || 'none'}${c.reset}`
+    );
+    return;
+  }
+
+  if (cmd === 'bisect' || cmd === 'bs') {
+    const commandStr = args.slice(1).join(' ') || 'node test.js';
+    printBanner();
+    console.log(
+      `${c.magenta}${c.bold}🕵️‍♂️ RUNNING AUTOMATED BINARY-SEARCH BISECT:${c.reset} ${c.cyan}${commandStr}${c.reset}\n`
+    );
+    const res = await engine.bisect(commandStr, '1', 'latest');
+    for (let i = 0; i < res.steps.length; i++) {
+      const s = res.steps[i];
+      const icon = s.passed ? `${c.green}✅ PASS${c.reset}` : `${c.red}❌ FAIL (exit ${s.exitCode})${c.reset}`;
+      console.log(
+        `   Step ${i + 1}: Tested #${s.seq} (${c.cyan}${s.id}${c.reset}) ➔ ${icon} (${s.durationMs}ms)`
+      );
+    }
+    const culprit = res.culpritCheckpoint;
+    console.log(
+      `\n${c.yellow}${c.bold}🎯 CULPRIT IDENTIFIED IN ${res.steps.length} STEP(S):${c.reset} ` +
+        `${c.cyan}${c.bold}#${culprit.seq} (${culprit.id})${c.reset} — "${culprit.label}"\n`
+    );
+    if (res.culpritDiff && res.culpritDiff.files.length > 0) {
+      console.log(`${c.bold}Exact changes introduced in #${culprit.seq} that broke the build:${c.reset}\n`);
+      printDiffFilesList(res.culpritDiff.files);
+    }
+    return;
+  }
+
+  if (cmd === 'export' || cmd === 'report') {
+    const outIdx = args.indexOf('--out');
+    let outFile = null;
+    if (outIdx !== -1 && args[outIdx + 1]) {
+      outFile = args[outIdx + 1];
+      args.splice(outIdx, 2);
+    }
+    const ref = args[1] || 'latest';
+    const md = engine.exportReport(ref, { redact: true });
+    if (outFile) {
+      fs.writeFileSync(path.resolve(cwd, outFile), md, 'utf8');
+      console.log(`${c.green}📋 Exported secret-redacted Flight Report to ${outFile}${c.reset}`);
+    } else {
+      console.log(md);
+    }
     return;
   }
 
@@ -321,7 +417,7 @@ async function main() {
     const port = Number(portArg) || 4321;
     const { url } = await createServer(cwd, port);
     printBanner();
-    console.log(`${c.green}${c.bold}🚀 Chronos Flight Recorder Web UI is live at:${c.reset} ${c.cyan}${c.bold}${url}${c.reset}`);
+    console.log(`${c.green}${c.bold}🚀 Chronos Flight Recorder Web UI v2.0 is live at:${c.reset} ${c.cyan}${c.bold}${url}${c.reset}`);
     console.log(`${c.gray}   Tracking workspace: ${cwd}${c.reset}`);
     if (shouldOpen) openBrowser(url);
     return;
@@ -332,12 +428,15 @@ async function main() {
     printBanner();
     console.log(`${c.cyan}🎬 Setting up interactive Time-Machine Demo in:${c.reset} ${sandboxDir}\n`);
     const demoEngine = await setupDemoScenario(sandboxDir);
+    demoEngine.tagCheckpoint('2', 'v1-stable');
     printTimeline(demoEngine);
     console.log(`${c.yellow}${c.bold}🔥 Look! Checkpoints #1 and #2 passed (✅), then #3 and #4 broke the build (❌)!${c.reset}`);
-    console.log(`${c.cyan}Try running these commands:${c.reset}`);
-    console.log(`  1. ${c.bold}ch --cwd ./playground d${c.reset}     (Diff vs --last-green)`);
-    console.log(`  2. ${c.bold}ch --cwd ./playground back${c.reset}  (Rewind to --last-green)`);
-    console.log(`  3. ${c.bold}ch --cwd ./playground ui${c.reset}    (Open Web Flight Recorder)\n`);
+    console.log(`${c.cyan}Try running these v2.0 MAXPING commands:${c.reset}`);
+    console.log(`  1. ${c.bold}ch --cwd ./playground d${c.reset}                               (Diff vs --last-green)`);
+    console.log(`  2. ${c.bold}ch --cwd ./playground bisect node test.js${c.reset}             (Auto-Bisect exact culprit!)`);
+    console.log(`  3. ${c.bold}ch --cwd ./playground pick --last-green src/shipping.js${c.reset} (Surgical 1-file restore)`);
+    console.log(`  4. ${c.bold}ch --cwd ./playground export${c.reset}                          (Generate Markdown Bug Report)`);
+    console.log(`  5. ${c.bold}ch --cwd ./playground back${c.reset}                            (Rewind all to --last-green)\n`);
     return;
   }
 
@@ -347,26 +446,18 @@ async function main() {
 ${c.bold}USAGE:${c.reset}
   chronos <command> [options]   ${c.gray}(or use the fast alias: ${c.cyan}${c.bold}ch${c.reset}${c.gray})${c.reset}
 
-${c.bold}ULTRA-FAST ALIASES:${c.reset}
+${c.bold}ULTRA-FAST ALIASES (v2.0 MAXPING):${c.reset}
   ${c.cyan}ch r <cmd>${c.reset}                        Run command & record flight checkpoint (e.g. ${c.bold}ch r npm test${c.reset})
-  ${c.cyan}ch d${c.reset}                              Diff current broken code against ${c.green}--last-green${c.reset}
-  ${c.cyan}ch back${c.reset}                           Rewind workspace to ${c.green}--last-green${c.reset} (with safety backup)
-  ${c.cyan}ch tl${c.reset}                             Show visual timeline of checkpoints & storage stats
+  ${c.cyan}ch d [ref]${c.reset}                        Diff current broken code against ${c.green}--last-green${c.reset} (or tag/id)
+  ${c.cyan}ch pick <ref> <file...>${c.reset}           Surgically restore ONLY specific file(s) from a checkpoint
+  ${c.cyan}ch bisect <cmd>${c.reset}                   Binary-search timeline to find the exact checkpoint that broke tests
+  ${c.cyan}ch tag <ref> <name>${c.reset}               Bookmark a checkpoint (e.g. ${c.bold}ch tag --last-green v1-stable${c.reset})
+  ${c.cyan}ch export [ref] [--out file.md]${c.reset}   Generate secret-redacted Markdown Bug Report
+  ${c.cyan}ch back [ref]${c.reset}                     Rewind entire workspace to ${c.green}--last-green${c.reset} (with safety backup)
+  ${c.cyan}ch tl${c.reset}                             Show visual timeline of checkpoints, tags & storage stats
   ${c.cyan}ch i [id]${c.reset}                         Inspect terminal logs (stdout/stderr) & diff of a checkpoint
-  ${c.cyan}ch ui [--open]${c.reset}                    Launch interactive Flight Recorder Web Dashboard
-
-${c.bold}FULL COMMANDS:${c.reset}
-  ${c.cyan}chronos init${c.reset}                      Initialize Flight Recorder & auto-exclude from Git
-  ${c.cyan}chronos run <cmd>${c.reset}                 Execute command, capture logs + exit code & snapshot code
-  ${c.cyan}chronos snap [message]${c.reset}            Create an instant manual micro-snapshot
-  ${c.cyan}chronos timeline${c.reset}                  Display visual history of code states & test runs
-  ${c.cyan}chronos inspect [id]${c.reset}              View captured stdout/stderr and diff of a specific run
-  ${c.cyan}chronos diff [--last-green|<id>]${c.reset}  Show exact code changes since last working state
-  ${c.cyan}chronos rewind [--last-green|<id>]${c.reset}Rewind entire workspace to a checkpoint (with auto-backup)
-  ${c.cyan}chronos watch [--exec "<cmd>"]${c.reset}    Auto-snapshot on file save (and optionally run tests)
-  ${c.cyan}chronos gc [keepCount]${c.reset}            Prune old checkpoints & unreferenced CAS blobs
-  ${c.cyan}chronos hook [powershell|bash]${c.reset}    Print shell alias integration snippet
-  ${c.cyan}chronos demo${c.reset}                      Generate a live broken-build scenario in ./playground
+  ${c.cyan}ch ui [--open]${c.reset}                    Launch real-time SSE Flight Recorder Web Dashboard
+  ${c.cyan}ch gc [keepCount]${c.reset}                 Prune old checkpoints while preserving ${c.green}--last-green${c.reset} & tags
 `);
 }
 

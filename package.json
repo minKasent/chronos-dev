@@ -1,6 +1,6 @@
 {
   "name": "chronos-dev",
-  "version": "1.1.0",
+  "version": "2.0.0",
   "description": "Black-box Flight Recorder & Time Machine for Code and Terminal (Zero-dependency CAS snapshot + terminal execution tracker)",
   "main": "src/engine.js",
   "bin": {

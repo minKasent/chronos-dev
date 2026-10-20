@@ -3,7 +3,13 @@ const path = require('path');
 const crypto = require('crypto');
 const zlib = require('zlib');
 const { spawn } = require('child_process');
-const { isBinaryBuffer, computeLineDiff, buildContextualHunks } = require('./diff');
+const {
+  isBinaryBuffer,
+  stripAnsi,
+  redactSecrets,
+  computeLineDiff,
+  buildContextualHunks
+} = require('./diff');
 
 const DEFAULT_IGNORES = new Set([
   '.chronos',
@@ -32,6 +38,7 @@ class ChronosEngine {
     this.objectsDir = path.join(this.chronosDir, 'objects');
     this.checkpointsDir = path.join(this.chronosDir, 'checkpoints');
     this.indexFile = path.join(this.chronosDir, 'index.json');
+    this.statCacheFile = path.join(this.chronosDir, 'stat-cache.json');
   }
 
   init() {
@@ -42,9 +49,10 @@ class ChronosEngine {
         this.indexFile,
         JSON.stringify(
           {
-            version: '1.1.0',
+            version: '2.0.0',
             createdAt: new Date().toISOString(),
             workspace: this.workspaceRoot,
+            tags: {},
             checkpoints: []
           },
           null,
@@ -79,11 +87,95 @@ class ChronosEngine {
 
   getIndex() {
     this.ensureInitialized();
-    return JSON.parse(fs.readFileSync(this.indexFile, 'utf8'));
+    const data = JSON.parse(fs.readFileSync(this.indexFile, 'utf8'));
+    if (!data.tags) data.tags = {};
+    return data;
   }
 
   saveIndex(indexData) {
     fs.writeFileSync(this.indexFile, JSON.stringify(indexData, null, 2), 'utf8');
+  }
+
+  loadStatCache() {
+    try {
+      if (fs.existsSync(this.statCacheFile)) {
+        return JSON.parse(fs.readFileSync(this.statCacheFile, 'utf8'));
+      }
+    } catch {
+      // Fallback to empty cache
+    }
+    return {};
+  }
+
+  saveStatCache(cache) {
+    try {
+      fs.writeFileSync(this.statCacheFile, JSON.stringify(cache), 'utf8');
+    } catch {
+      // Ignore cache write errors
+    }
+  }
+
+  /**
+   * Capture lightweight environment & Git context without spawning external processes
+   */
+  captureEnvironment() {
+    let gitBranch = null;
+    let gitCommit = null;
+    try {
+      const headFile = path.join(this.workspaceRoot, '.git', 'HEAD');
+      if (fs.existsSync(headFile)) {
+        const head = fs.readFileSync(headFile, 'utf8').trim();
+        if (head.startsWith('ref: ')) {
+          const refPath = head.slice(5);
+          gitBranch = refPath.replace(/^refs\/heads\//, '');
+          const commitFile = path.join(this.workspaceRoot, '.git', refPath);
+          if (fs.existsSync(commitFile)) {
+            gitCommit = fs.readFileSync(commitFile, 'utf8').trim().slice(0, 8);
+          }
+        } else {
+          gitCommit = head.slice(0, 8);
+        }
+      }
+    } catch {
+      // Ignore git read errors
+    }
+
+    // Check .env keys fingerprint (only key names + hashed values so no secrets are stored in plain text)
+    let envKeysHash = null;
+    try {
+      const dotenvPath = path.join(this.workspaceRoot, '.env');
+      if (fs.existsSync(dotenvPath)) {
+        const content = fs.readFileSync(dotenvPath, 'utf8');
+        envKeysHash = crypto.createHash('sha256').update(content).digest('hex').slice(0, 10);
+      }
+    } catch {
+      // Ignore
+    }
+
+    return {
+      nodeVersion: process.version,
+      platform: `${process.platform}-${process.arch}`,
+      gitBranch,
+      gitCommit,
+      envKeysHash
+    };
+  }
+
+  /**
+   * Detect environment drift between two environment records
+   */
+  diffEnvironment(oldEnv = {}, newEnv = {}) {
+    const drifts = [];
+    if (oldEnv.nodeVersion && newEnv.nodeVersion && oldEnv.nodeVersion !== newEnv.nodeVersion) {
+      drifts.push(`Node.js runtime changed: ${oldEnv.nodeVersion} ➔ ${newEnv.nodeVersion}`);
+    }
+    if (oldEnv.gitBranch !== newEnv.gitBranch && (oldEnv.gitBranch || newEnv.gitBranch)) {
+      drifts.push(`Git branch changed: ${oldEnv.gitBranch || 'none'} ➔ ${newEnv.gitBranch || 'none'}`);
+    }
+    if (oldEnv.envKeysHash !== newEnv.envKeysHash && (oldEnv.envKeysHash || newEnv.envKeysHash)) {
+      drifts.push(`.env configuration modified (${oldEnv.envKeysHash || 'none'} ➔ ${newEnv.envKeysHash || 'none'})`);
+    }
+    return drifts;
   }
 
   /**
@@ -112,6 +204,12 @@ class ChronosEngine {
       }
     }
     return false;
+  }
+
+  blobExists(hash) {
+    if (!hash) return false;
+    const blobPath = path.join(this.objectsDir, hash.slice(0, 2), hash.slice(2));
+    return fs.existsSync(blobPath);
   }
 
   /**
@@ -149,12 +247,14 @@ class ChronosEngine {
   }
 
   /**
-   * Scan the workspace and build a deterministic file tree
+   * Scan the workspace using Incremental Stat Cache (mtimeMs + size) for blazing-fast snapshots
    */
   scanWorkspace(persistBlobs = true) {
     this.ensureInitialized();
     const rawTree = {};
     const customIgnores = this.loadCustomIgnores();
+    const statCache = this.loadStatCache();
+    const nextCache = {};
 
     const walk = (dir) => {
       let entries;
@@ -174,20 +274,37 @@ class ChronosEngine {
         } else if (entry.isFile()) {
           try {
             const stat = fs.statSync(fullPath);
-            // Skip files > 10MB
             if (stat.size > 10 * 1024 * 1024) continue;
+            const mtimeMs = Math.round(stat.mtimeMs);
+            const cached = statCache[relPath];
+
+            // Fast path: if size and mtimeMs match and blob is already in CAS store, skip disk read!
+            if (
+              cached &&
+              cached.size === stat.size &&
+              cached.mtimeMs === mtimeMs &&
+              cached.hash &&
+              this.blobExists(cached.hash)
+            ) {
+              rawTree[relPath] = cached;
+              nextCache[relPath] = cached;
+              continue;
+            }
+
             const buffer = fs.readFileSync(fullPath);
             const binary = isBinaryBuffer(buffer);
             const hash = persistBlobs
               ? this.storeBlob(buffer)
               : crypto.createHash('sha256').update(buffer).digest('hex');
 
-            rawTree[relPath] = {
+            const meta = {
               hash,
               size: stat.size,
               binary,
-              mtimeMs: Math.round(stat.mtimeMs)
+              mtimeMs
             };
+            rawTree[relPath] = meta;
+            if (persistBlobs) nextCache[relPath] = meta;
           } catch {
             // Skip transient or locked OS files
           }
@@ -197,7 +314,10 @@ class ChronosEngine {
 
     walk(this.workspaceRoot);
 
-    // Sort keys deterministically so treeHash only depends on file paths + content hashes
+    if (persistBlobs) {
+      this.saveStatCache(nextCache);
+    }
+
     const sortedTree = {};
     for (const key of Object.keys(rawTree).sort()) {
       sortedTree[key] = rawTree[key];
@@ -379,11 +499,13 @@ class ChronosEngine {
   createCheckpoint(options = {}) {
     this.ensureInitialized();
     const index = this.getIndex();
-    const lastSeq = index.checkpoints.length > 0
-      ? index.checkpoints[index.checkpoints.length - 1].seq
-      : 0;
+    const lastSeq =
+      index.checkpoints.length > 0
+        ? index.checkpoints[index.checkpoints.length - 1].seq
+        : 0;
     const seq = lastSeq + 1;
     const tree = this.scanWorkspace(true);
+    const env = this.captureEnvironment();
 
     const treeHash = this.computeTreeHash(tree);
     const shortHash = treeHash.slice(0, 6);
@@ -440,6 +562,8 @@ class ChronosEngine {
       durationMs: options.durationMs || 0,
       stdout: options.stdout || '',
       stderr: options.stderr || '',
+      env,
+      tags: options.tags || [],
       treeHash,
       fileCount: Object.keys(tree).length,
       diffSummary,
@@ -457,7 +581,36 @@ class ChronosEngine {
   }
 
   /**
-   * Resolve a checkpoint reference ('--last-green', 'last-green', 'latest', seq number, or ID prefix)
+   * Tag / Bookmark a checkpoint with a human-friendly name (e.g. 'v1-working', 'before-refactor')
+   */
+  tagCheckpoint(ref, tagName) {
+    if (!tagName || typeof tagName !== 'string') {
+      throw new Error('Tag name is required');
+    }
+    const cleanTag = tagName.trim();
+    const cp = this.resolveCheckpoint(ref);
+    if (!cp) {
+      throw new Error(`Could not find checkpoint matching '${ref}'`);
+    }
+
+    const index = this.getIndex();
+    index.tags[cleanTag] = cp.id;
+
+    const idxEntry = index.checkpoints.find((c) => c.id === cp.id);
+    if (idxEntry) {
+      idxEntry.tags = Array.from(new Set([...(idxEntry.tags || []), cleanTag]));
+    }
+    this.saveIndex(index);
+
+    cp.tags = Array.from(new Set([...(cp.tags || []), cleanTag]));
+    const cpFile = path.join(this.checkpointsDir, `${cp.id}.json`);
+    fs.writeFileSync(cpFile, JSON.stringify(cp, null, 2), 'utf8');
+
+    return { tag: cleanTag, checkpoint: cp };
+  }
+
+  /**
+   * Resolve a checkpoint reference ('--last-green', 'latest', tag name, seq number, or ID prefix)
    */
   resolveCheckpoint(ref) {
     const index = this.getIndex();
@@ -477,6 +630,11 @@ class ChronosEngine {
       return null;
     }
 
+    // Check named tags first
+    if (index.tags && index.tags[ref]) {
+      return this.getCheckpoint(index.tags[ref]);
+    }
+
     const numeric = Number(String(ref).replace(/^#/, ''));
     if (!Number.isNaN(numeric) && numeric > 0) {
       const found = list.find((c) => c.seq === numeric);
@@ -484,7 +642,11 @@ class ChronosEngine {
     }
 
     const match = list.find(
-      (c) => c.id === ref || c.id.startsWith(ref) || c.id.endsWith(ref)
+      (c) =>
+        c.id === ref ||
+        c.id.startsWith(ref) ||
+        c.id.endsWith(ref) ||
+        (Array.isArray(c.tags) && c.tags.includes(ref))
     );
     return match ? this.getCheckpoint(match.id) : null;
   }
@@ -513,10 +675,12 @@ class ChronosEngine {
     let compareLabel;
     let compareGetter;
     let compareCp = null;
+    let compareEnv = null;
 
     if (!secondRef || secondRef === 'WORKTREE') {
       compareTree = this.scanWorkspace(false);
       compareLabel = 'Current Working Directory (LIVE)';
+      compareEnv = this.captureEnvironment();
       compareGetter = (relPath) =>
         fs.readFileSync(path.join(this.workspaceRoot, relPath), 'utf8');
     } else {
@@ -526,6 +690,7 @@ class ChronosEngine {
       }
       compareTree = compareCp.tree;
       compareLabel = `${compareCp.id} (${compareCp.label})`;
+      compareEnv = compareCp.env || {};
       compareGetter = (_relPath, meta) => this.readBlob(meta.hash, true);
     }
 
@@ -536,10 +701,13 @@ class ChronosEngine {
       compareGetter
     );
 
+    const envDrift = this.diffEnvironment(baseCp.env || {}, compareEnv || {});
+
     return {
       baseCheckpoint: baseCp,
       compareCheckpoint: compareCp,
       compareLabel,
+      envDrift,
       ...diffResult
     };
   }
@@ -576,6 +744,15 @@ class ChronosEngine {
         const durationMs = Date.now() - startTime;
         const exitCode = typeof code === 'number' ? code : 1;
 
+        if (options.recordCheckpoint === false) {
+          return resolve({
+            exitCode,
+            durationMs,
+            stdout: stdout.trimEnd(),
+            stderr: stderr.trimEnd()
+          });
+        }
+
         const cp = this.createCheckpoint({
           trigger: 'exec',
           label: options.label || commandStr,
@@ -590,6 +767,47 @@ class ChronosEngine {
         resolve(cp);
       });
     });
+  }
+
+  /**
+   * Materialize a checkpoint's file tree onto the working directory without creating a new checkpoint
+   */
+  materializeTree(targetTree) {
+    const currentTree = this.scanWorkspace(false);
+    const dirsToCheck = new Set();
+
+    for (const relPath of Object.keys(currentTree)) {
+      if (!targetTree[relPath]) {
+        const fullPath = path.join(this.workspaceRoot, relPath);
+        if (fs.existsSync(fullPath)) {
+          fs.unlinkSync(fullPath);
+          dirsToCheck.add(path.dirname(fullPath));
+        }
+      }
+    }
+
+    for (const dir of dirsToCheck) {
+      let cur = dir;
+      while (cur.startsWith(this.workspaceRoot) && cur !== this.workspaceRoot) {
+        if (fs.existsSync(cur) && fs.readdirSync(cur).length === 0) {
+          fs.rmdirSync(cur);
+          cur = path.dirname(cur);
+        } else {
+          break;
+        }
+      }
+    }
+
+    let restoredCount = 0;
+    for (const [relPath, meta] of Object.entries(targetTree)) {
+      const fullPath = path.join(this.workspaceRoot, relPath);
+      fs.mkdirSync(path.dirname(fullPath), { recursive: true });
+      const buffer = this.readBlob(meta.hash, false);
+      fs.writeFileSync(fullPath, buffer);
+      restoredCount++;
+    }
+
+    return restoredCount;
   }
 
   /**
@@ -614,42 +832,8 @@ class ChronosEngine {
       });
     }
 
-    // 1. Delete files present in current workspace that did not exist in targetCp.tree
-    const dirsToCheck = new Set();
-    for (const relPath of Object.keys(currentTree)) {
-      if (!targetCp.tree[relPath]) {
-        const fullPath = path.join(this.workspaceRoot, relPath);
-        if (fs.existsSync(fullPath)) {
-          fs.unlinkSync(fullPath);
-          dirsToCheck.add(path.dirname(fullPath));
-        }
-      }
-    }
+    const restoredCount = this.materializeTree(targetCp.tree);
 
-    // Clean up any newly emptied directories
-    for (const dir of dirsToCheck) {
-      let cur = dir;
-      while (cur.startsWith(this.workspaceRoot) && cur !== this.workspaceRoot) {
-        if (fs.existsSync(cur) && fs.readdirSync(cur).length === 0) {
-          fs.rmdirSync(cur);
-          cur = path.dirname(cur);
-        } else {
-          break;
-        }
-      }
-    }
-
-    // 2. Restore all files from targetCp.tree
-    let restoredCount = 0;
-    for (const [relPath, meta] of Object.entries(targetCp.tree)) {
-      const fullPath = path.join(this.workspaceRoot, relPath);
-      fs.mkdirSync(path.dirname(fullPath), { recursive: true });
-      const buffer = this.readBlob(meta.hash, false);
-      fs.writeFileSync(fullPath, buffer);
-      restoredCount++;
-    }
-
-    // 3. Record rewind event checkpoint
     const rewindCp = this.createCheckpoint({
       trigger: 'rewind',
       label: `Rewound workspace to ${targetCp.id} (${targetCp.label})`,
@@ -669,8 +853,217 @@ class ChronosEngine {
   }
 
   /**
-   * Garbage Collection: Keep the latest N checkpoints (plus the most recent green checkpoint)
-   * and prune unreferenced blobs from .chronos/objects
+   * Surgical File Checkout: Restore specific file(s) from a checkpoint without rewinding the rest of the project
+   */
+  checkoutFiles(targetRef = '--last-green', filePaths = []) {
+    const targetCp = this.resolveCheckpoint(targetRef);
+    if (!targetCp) {
+      throw new Error(`No checkpoint found matching '${targetRef}'`);
+    }
+    if (!Array.isArray(filePaths) || filePaths.length === 0) {
+      throw new Error('At least one file path must be specified');
+    }
+
+    const restoredFiles = [];
+    const removedFiles = [];
+
+    for (const rawPath of filePaths) {
+      const relPath = rawPath.replace(/\\/g, '/').replace(/^\.\//, '');
+      const meta = targetCp.tree[relPath];
+      const fullPath = path.join(this.workspaceRoot, relPath);
+
+      if (meta) {
+        fs.mkdirSync(path.dirname(fullPath), { recursive: true });
+        const buffer = this.readBlob(meta.hash, false);
+        fs.writeFileSync(fullPath, buffer);
+        restoredFiles.push(relPath);
+      } else if (fs.existsSync(fullPath)) {
+        fs.unlinkSync(fullPath);
+        removedFiles.push(relPath);
+      } else {
+        throw new Error(`File '${relPath}' does not exist in checkpoint ${targetCp.id}`);
+      }
+    }
+
+    const cp = this.createCheckpoint({
+      trigger: 'pick',
+      label: `Surgical restore of [${[...restoredFiles, ...removedFiles].join(', ')}] from ${targetCp.id}`
+    });
+
+    return {
+      targetCheckpoint: targetCp,
+      checkpoint: cp,
+      restoredFiles,
+      removedFiles
+    };
+  }
+
+  /**
+   * Automated Binary Search Bug Detective (chronos bisect)
+   * Finds the exact first checkpoint where `commandStr` started failing!
+   */
+  async bisect(commandStr, goodRef = '1', badRef = 'latest') {
+    this.ensureInitialized();
+    const index = this.getIndex();
+    if (index.checkpoints.length < 2) {
+      throw new Error('Bisect requires at least 2 checkpoints in timeline.');
+    }
+
+    const goodCp = this.resolveCheckpoint(goodRef) || this.getCheckpoint(index.checkpoints[0].id);
+    const badCp = this.resolveCheckpoint(badRef) || this.resolveCheckpoint('latest');
+
+    if (!goodCp || !badCp) {
+      throw new Error('Could not resolve good/bad bounds for bisect.');
+    }
+    if (goodCp.seq >= badCp.seq) {
+      throw new Error(
+        `Good checkpoint (#${goodCp.seq}) must be older than bad checkpoint (#${badCp.seq}).`
+      );
+    }
+
+    // Save current live workspace state so we can restore it 100% after bisect finishes
+    const originalTree = this.scanWorkspace(true);
+
+    const candidates = index.checkpoints.filter(
+      (c) => c.seq >= goodCp.seq && c.seq <= badCp.seq
+    );
+
+    const steps = [];
+    let low = 0;
+    let high = candidates.length - 1;
+    let culpritMeta = candidates[high];
+
+    try {
+      while (low <= high) {
+        const mid = Math.floor((low + high) / 2);
+        const currentMeta = candidates[mid];
+        const cp = this.getCheckpoint(currentMeta.id);
+
+        this.materializeTree(cp.tree);
+        const execRes = await this.runCommandAndRecord(commandStr, {
+          silent: true,
+          recordCheckpoint: false
+        });
+
+        const passed = execRes.exitCode === 0;
+        steps.push({
+          seq: cp.seq,
+          id: cp.id,
+          label: cp.label,
+          exitCode: execRes.exitCode,
+          passed,
+          durationMs: execRes.durationMs
+        });
+
+        if (passed) {
+          low = mid + 1;
+        } else {
+          culpritMeta = currentMeta;
+          high = mid - 1;
+        }
+      }
+    } finally {
+      // Always restore original workspace state
+      this.materializeTree(originalTree);
+    }
+
+    const culpritCp = this.getCheckpoint(culpritMeta.id);
+    let culpritDiff = null;
+    if (culpritCp.seq > 1) {
+      const prevCp = this.resolveCheckpoint(String(culpritCp.seq - 1));
+      if (prevCp) {
+        culpritDiff = this.diffTrees(
+          prevCp.tree,
+          culpritCp.tree,
+          (_p, meta) => this.readBlob(meta.hash, true),
+          (_p, meta) => this.readBlob(meta.hash, true)
+        );
+      }
+    }
+
+    return {
+      command: commandStr,
+      goodCheckpoint: goodCp,
+      badCheckpoint: badCp,
+      culpritCheckpoint: culpritCp,
+      culpritDiff,
+      steps
+    };
+  }
+
+  /**
+   * Generate a secret-redacted Markdown Flight Report for debugging / sharing
+   */
+  exportReport(ref = 'latest', options = { redact: true }) {
+    const cp = this.resolveCheckpoint(ref);
+    if (!cp) {
+      throw new Error(`Checkpoint not found: ${ref}`);
+    }
+
+    const lastGreen = this.resolveCheckpoint('--last-green');
+    const clean = (txt) => {
+      const stripped = stripAnsi(txt);
+      return options.redact !== false ? redactSecrets(stripped) : stripped;
+    };
+
+    const lines = [
+      `# ⏱ Chronos Flight Recorder Diagnostic Report`,
+      ``,
+      `- **Checkpoint:** \`${cp.id}\` (#${cp.seq})`,
+      `- **Status:** ${cp.status === 'pass' ? '✅ PASS (exit 0)' : cp.status === 'fail' ? `❌ FAIL (exit ${cp.exitCode})` : `📸 ${cp.trigger.toUpperCase()}`}`,
+      `- **Command:** \`${cp.command || cp.label}\``,
+      `- **Timestamp:** ${cp.timestamp} (${cp.durationMs}ms)`,
+      `- **Environment:** Node \`${cp.env?.nodeVersion || process.version}\` on \`${cp.env?.platform || process.platform}\`${cp.env?.gitBranch ? ` (Git branch: \`${cp.env.gitBranch}\`)` : ''}`,
+      ``
+    ];
+
+    if (cp.stdout || cp.stderr) {
+      lines.push(`## 🖥 Terminal Output (\`stdout\` / \`stderr\`)`);
+      lines.push('```text');
+      if (cp.stdout) lines.push(clean(cp.stdout));
+      if (cp.stderr) {
+        if (cp.stdout) lines.push('--- STDERR ---');
+        lines.push(clean(cp.stderr));
+      }
+      lines.push('```');
+      lines.push('');
+    }
+
+    const baseCp =
+      lastGreen && lastGreen.id !== cp.id
+        ? lastGreen
+        : cp.seq > 1
+        ? this.resolveCheckpoint(String(cp.seq - 1))
+        : null;
+
+    if (baseCp) {
+      const diff = this.compareWith(baseCp.id, cp.id);
+      lines.push(
+        `## 🔍 Code Changes (vs \`${baseCp.id}\` — ${baseCp.status === 'pass' ? 'Last Green ✅' : baseCp.label})`
+      );
+      if (diff.envDrift && diff.envDrift.length > 0) {
+        lines.push(`> ⚠️ **Environment Drift:** ${diff.envDrift.join(' | ')}`);
+        lines.push('');
+      }
+      for (const file of diff.files) {
+        lines.push(`### 📄 \`${file.path}\` (${file.status}: +${file.added}/-${file.removed})`);
+        lines.push('```diff');
+        for (const hunk of file.hunks) {
+          for (const l of hunk.lines) {
+            const p = l.type === 'add' ? '+' : l.type === 'del' ? '-' : ' ';
+            lines.push(`${p} ${clean(l.text)}`);
+          }
+        }
+        lines.push('```');
+        lines.push('');
+      }
+    }
+
+    return lines.join('\n');
+  }
+
+  /**
+   * Garbage Collection: Keep the latest N checkpoints (plus --last-green and all tagged checkpoints)
    */
   gc(keepCount = 20) {
     this.ensureInitialized();
@@ -682,17 +1075,20 @@ class ChronosEngine {
     }
 
     const lastGreen = this.resolveCheckpoint('--last-green');
-    const keepIds = new Set(
-      index.checkpoints.slice(-keepCount).map((cp) => cp.id)
-    );
+    const keepIds = new Set(index.checkpoints.slice(-keepCount).map((cp) => cp.id));
     if (lastGreen) keepIds.add(lastGreen.id);
+    if (index.tags) {
+      for (const taggedId of Object.values(index.tags)) {
+        keepIds.add(taggedId);
+      }
+    }
 
     const activeBlobs = new Set();
     const remainingCheckpoints = [];
     let removedCheckpoints = 0;
 
     for (const entry of index.checkpoints) {
-      if (keepIds.has(entry.id)) {
+      if (keepIds.has(entry.id) || (entry.tags && entry.tags.length > 0)) {
         remainingCheckpoints.push(entry);
         const cp = this.getCheckpoint(entry.id);
         if (cp && cp.tree) {
@@ -710,7 +1106,6 @@ class ChronosEngine {
     index.checkpoints = remainingCheckpoints;
     this.saveIndex(index);
 
-    // Sweep unreferenced blobs
     let removedBlobs = 0;
     let bytesFreed = 0;
 
@@ -769,7 +1164,7 @@ class ChronosEngine {
 
     const savedPercent =
       logicalBytes > 0
-        ? Math.max(0, ((1 - physicalCompressedBytes / logicalBytes) * 100)).toFixed(1)
+        ? Math.max(0, (1 - physicalCompressedBytes / logicalBytes) * 100).toFixed(1)
         : '0.0';
 
     return {
