@@ -1,0 +1,47 @@
+{
+  "name": "chronos-dev",
+  "version": "1.1.0",
+  "description": "Black-box Flight Recorder & Time Machine for Code and Terminal (Zero-dependency CAS snapshot + terminal execution tracker)",
+  "main": "src/engine.js",
+  "bin": {
+    "chronos": "./bin/chronos.js",
+    "ch": "./bin/chronos.js"
+  },
+  "files": [
+    "bin/",
+    "src/",
+    "README.md",
+    "LICENSE"
+  ],
+  "engines": {
+    "node": ">=18.0.0"
+  },
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/minKasent/chronos-dev.git"
+  },
+  "homepage": "https://github.com/minKasent/chronos-dev#readme",
+  "bugs": {
+    "url": "https://github.com/minKasent/chronos-dev/issues"
+  },
+  "scripts": {
+    "start": "node ./bin/chronos.js",
+    "test": "node --test test/chronos.test.js",
+    "prepublishOnly": "npm test",
+    "demo": "node ./bin/chronos.js demo",
+    "ui": "node ./bin/chronos.js ui"
+  },
+  "keywords": [
+    "time-machine",
+    "flight-recorder",
+    "git",
+    "snapshot",
+    "undo",
+    "developer-tools",
+    "cli",
+    "cas",
+    "diff"
+  ],
+  "author": "dangkhoa (minKasent)",
+  "license": "MIT"
+}
